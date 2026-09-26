@@ -92,10 +92,19 @@ public final class VideoPlayer {
 
     /** 当前展示的纹理（渲染线程读） */
     private volatile ResourceLocation textureLoc;
-    private NativeImage[] imgs;
+    /**
+     * 三套缓冲/纹理。★ imgs 与 nbuf 必须是 volatile：
+     * 二者由【渲染线程】在 promoteStaged 里赋值，却由【视频线程】在 uploadFrame 里读取，
+     * 而这两个线程之间没有共同持有的锁（promoteStaged / getFrame 都不是 synchronized）。
+     * 非 volatile 时视频线程可能一直读到陈旧的 nbuf==0，于是再也不填充新帧、
+     * 画面永久停在首帧 —— 与「有声音但画面卡住不动」的症状完全一致。
+     * 让 nbuf 为 volatile 后：promoteStaged 里的 volatile 写(nbuf) 充当 release，
+     * uploadFrame 里的 volatile 读充当 acquire，正好为 imgs 的赋值建立可见性。
+     */
+    private volatile NativeImage[] imgs;
     private DynamicTexture[] texs;
     private ResourceLocation[] locs;
-    private int nbuf;
+    private volatile int nbuf;
     /** 当前展示的缓冲下标（-1 = 尚未初始化）。volatile：视频线程据此选下一块， 必须可见 */
     private volatile int front = -1;
     /** 后台已填好、等待渲染线程提升的缓冲下标（-1 = 无） */
