@@ -1,0 +1,110 @@
+/**
+ * 媒体显示同步包（服务端 → 客户端）：
+ * 服务端「翻牌媒体显示源」在显示链接器刷新时，把翻牌坐标 + 媒体路径 + 显示模式
+ * 发给附近客户端。客户端收到后写入 MediaRenderRegistry，由 FlapDisplayRenderer
+ * 的 Mixin 在渲染该翻牌时叠加绘制媒体帧。
+ *
+ * 「整片拼图」支持：中间有洞时显示带被拆成多个子显示带，每个子显示带显示
+ * 整张图片的对应部分（board 为整片包围盒，offset/seg 为当前子显示带的位置尺寸），
+ * 视觉上是一张完整的图（洞处物理空缺）。
+ *
+ * @param flapPos     翻牌显示器（显示链接目标）controller 坐标
+ * @param mediaPath   媒体文件路径（空 = 该翻牌不显示媒体，走原版字符显示）
+ * @param displayMode FIT / STRETCH / COVER
+ * @param boardW/boardH 整片包围盒尺寸（方块数）
+ * @param offsetX/offsetY 当前子显示带相对整片左上角的偏移（方块数）
+ * @param segW/segH   当前子显示带尺寸（方块数）
+ */
+package com.flapdisplayplus.network;
+
+import com.flapdisplayplus.FlapDisplayPlus;
+import com.flapdisplayplus.client.MediaRenderRegistry;
+import com.simibubi.create.content.trains.display.FlapDisplayBlockEntity;
+import io.netty.buffer.ByteBuf;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.network.codec.ByteBufCodecs;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.neoforged.neoforge.network.handling.IPayloadContext;
+
+import java.util.HashSet;
+import java.util.Set;
+
+public record MediaDisplayPacket(BlockPos flapPos, String mediaPath, String displayMode)
+        implements CustomPacketPayload {
+
+    public static final Type<MediaDisplayPacket> TYPE =
+            new Type<>(ResourceLocation.fromNamespaceAndPath(FlapDisplayPlus.MODID, "media_display"));
+
+    public static final StreamCodec<ByteBuf, MediaDisplayPacket> STREAM_CODEC =
+            StreamCodec.composite(
+                    BlockPos.STREAM_CODEC, MediaDisplayPacket::flapPos,
+                    ByteBufCodecs.STRING_UTF8, MediaDisplayPacket::mediaPath,
+                    ByteBufCodecs.STRING_UTF8, MediaDisplayPacket::displayMode,
+                    MediaDisplayPacket::new
+            );
+
+    @Override
+    public Type<? extends CustomPacketPayload> type() {
+        return TYPE;
+    }
+
+    public static void handle(MediaDisplayPacket msg, IPayloadContext ctx) {
+        ctx.enqueueWork(() -> {
+            BlockPos key = resolveRenderPos(msg.flapPos(), ctx);
+            FlapDisplayPlus.LOGGER.info("[MediaPacket] 客户端收到: renderKey={} media={} mode={}",
+                    key, msg.mediaPath().isEmpty() ? "(空)" : msg.mediaPath(), msg.displayMode());
+            if (msg.mediaPath() == null || msg.mediaPath().isEmpty()) {
+                MediaRenderRegistry.remove(key);
+            } else {
+                MediaRenderRegistry.put(key, msg.mediaPath(), msg.displayMode());
+            }
+        });
+    }
+
+    /**
+     * 把显示链接器的目标坐标解析为翻牌渲染实际使用的坐标：
+     * 1. 目标本身是 FlapDisplayBlockEntity → 取其 controller（getController()，自身为 controller 时返回自身）
+     * 2. 目标不是翻牌 → 检查 6 个相邻方块是否为翻牌，取 controller
+     * 3. 都找不到 → 原样返回（渲染侧会打 info=null 日志便于诊断）
+     */
+    private static BlockPos resolveRenderPos(BlockPos flapPos, IPayloadContext ctx) {
+        try {
+            if (ctx.player() == null || ctx.player().level() == null) {
+                return flapPos;
+            }
+            var level = ctx.player().level();
+            Set<BlockPos> tried = new HashSet<>();
+            tried.add(flapPos);
+            BlockEntity target = level.getBlockEntity(flapPos);
+            if (target instanceof FlapDisplayBlockEntity fbe) {
+                return controllerPos(fbe, flapPos);
+            }
+            // 相邻 6 方向找翻牌
+            for (Direction d : Direction.values()) {
+                BlockPos p = flapPos.relative(d);
+                if (!tried.add(p)) {
+                    continue;
+                }
+                if (level.getBlockEntity(p) instanceof FlapDisplayBlockEntity fbe2) {
+                    return controllerPos(fbe2, p);
+                }
+            }
+        } catch (Throwable t) {
+            FlapDisplayPlus.LOGGER.warn("[MediaPacket] 解析渲染坐标失败, fallback flapPos: {}", t.toString());
+        }
+        return flapPos;
+    }
+
+    private static BlockPos controllerPos(FlapDisplayBlockEntity fbe, BlockPos fallback) {
+        try {
+            FlapDisplayBlockEntity controller = fbe.getController();
+            return (controller != null ? controller : fbe).getBlockPos();
+        } catch (Throwable t) {
+            return fallback;
+        }
+    }
+}

@@ -1,0 +1,19 @@
+{
+    "required": false,
+    "minVersion": "0.8",
+    "package": "com.flapdisplayplus.music.mixin",
+    "compatibilityLevel": "JAVA_21",
+    "mixins": [
+        "TileEntityMusicPlayerMixin",
+        "BlockMusicPlayerMixin"
+    ],
+    "client": [
+        "NetMusicSoundMixin",
+        "NetMusicAudioStreamMixin",
+        "CDBurnerMenuScreenMixin"
+    ],
+    "server": [],
+    "injectors": {
+        "defaultRequire": 0
+    }
+}

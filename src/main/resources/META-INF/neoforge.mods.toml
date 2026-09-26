@@ -1,0 +1,60 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="MIT"
+
+[[mods]]
+modId="flapdisplayplus"
+version="1.0.0"
+displayName="翻牌万象 FlapDisplayPlus"
+authors="枕燕眠"
+description='''
+机械动力(Create)的翻牌显示器扩展附属模组：让翻牌显示图片、GIF 动图与
+实时信息（现实时间/游戏时间/天气/TPS）；若安装了网络音乐机(Net Music)，
+还能联动显示封面、歌名与歌词。所有内容走统一的帧渲染管线绘制在翻牌正面。
+
+A Create addon that extends Flap Displays to show images, GIFs and
+live info (real time / in-game time / weather / TPS) — with optional
+Net Music integration for album covers, titles and lyrics.
+'''
+
+# ===== 依赖：NeoForge =====
+[[dependencies.flapdisplayplus]]
+    modId="neoforge"
+    type="required"
+    versionRange="[21.1,)"
+    ordering="NONE"
+    side="BOTH"
+
+# ===== 依赖：Minecraft 1.21.1 =====
+[[dependencies.flapdisplayplus]]
+    modId="minecraft"
+    type="required"
+    versionRange="[1.21.1,1.22)"
+    ordering="NONE"
+    side="BOTH"
+
+# ===== 依赖：机械动力 Create（前置）=====
+[[dependencies.flapdisplayplus]]
+    modId="create"
+    type="required"
+    versionRange="[6.0.10,6.1.0)"
+    ordering="AFTER"
+    side="BOTH"
+
+# ===== 软联动：网络音乐机 Net Music（可选，不强制）=====
+[[dependencies.flapdisplayplus]]
+    modId="netmusic"
+    type="optional"
+    versionRange="[1.0,)"
+    ordering="AFTER"
+    side="BOTH"
+
+# ===== Mixin 配置 =====
+# 核心 mixin（Create 翻牌渲染 + 布谷鸟时钟 + 显示链接器）
+[[mixins]]
+    config="flapdisplayplus.mixins.json"
+
+# 音乐联动 mixin（网络音乐机相关，未安装 Net Music 时目标类缺失自动跳过；
+# music 版 FlapDisplayRendererMixin 织入 Create 渲染器，不受影响）
+[[mixins]]
+    config="flapdisplayplus.music.mixins.json"

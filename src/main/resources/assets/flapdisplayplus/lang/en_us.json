@@ -1,0 +1,33 @@
+{
+  "flapdisplayplus.display_source.netmusic_song_name": "Net Music: Song Name",
+  "flapdisplayplus.display_source.netmusic_play_status": "Net Music: Play Status",
+  "flapdisplayplus.display_source.netmusic_lyric": "Net Music: Original Lyric",
+  "flapdisplayplus.display_source.netmusic_trans_lyric": "Net Music: Translated Lyric",
+  "flapdisplayplus.display_source.netmusic_all_in_one": "Net Music: All-in-One",
+  "flapdisplayplus.display_source.netmusic_dual_lyric": "Net Music: Dual Lyric",
+  "flapdisplayplus.display_source.netmusic_cover": "Net Music: Cover Art",
+
+  "flapdisplayplus.gui.search.open": "Search",
+  "flapdisplayplus.gui.search.title": "Search Songs",
+  "flapdisplayplus.gui.search.input": "Enter song name...",
+  "flapdisplayplus.gui.search.do": "Search",
+  "flapdisplayplus.gui.search.loading": "Searching...",
+  "flapdisplayplus.gui.search.no_result": "No results (check network or try another keyword)",
+  "flapdisplayplus.gui.search.hint": "Pick a song to auto-fill the burner, then click Burn",
+
+  "flapdisplayplus.config.show_lyric_when_paused": "Show Lyric When Paused",
+  "flapdisplayplus.config.show_pause_time": "Show Pause Time",
+  "flapdisplayplus.config.pause_symbol_enabled": "Show Play/Pause Symbol",
+  "flapdisplayplus.config.redstone_mode": "Redstone Mode",
+  "flapdisplayplus.config.pause_resume": "Pause Resume",
+  "flapdisplayplus.config.netease_cookie": "NetEase Cookie",
+  "flapdisplayplus.config.audio_quality": "Audio Quality",
+  "flapdisplayplus.config.search_list_mode": "Search Result List Mode",
+  "flapdisplayplus.config.search_page_size": "Songs Per Page",
+
+  "flapdisplayplus.configuration.section.display": "Display",
+  "flapdisplayplus.configuration.section.redstone": "Redstone",
+  "flapdisplayplus.configuration.section.playback": "Playback",
+  "flapdisplayplus.configuration.section.netease": "NetEase",
+  "flapdisplayplus.configuration.section.search_list": "Search List"
+}

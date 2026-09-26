@@ -1,0 +1,46 @@
+# ===== Gradle =====
+.gradle/
+build/
+out/
+!gradle/wrapper/gradle-wrapper.jar
+
+# ===== IDE: IntelliJ IDEA =====
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# ===== IDE: Eclipse =====
+.classpath
+.project
+.settings/
+bin/
+*.launch
+
+# ===== IDE: VS Code =====
+.vscode/
+
+# ===== Minecraft 运行时 =====
+run/
+runs/
+
+# ===== 第三方 jar（版权属于原作者，不应提交）=====
+# 常规依赖已改为 Maven 坐标（见 build.gradle / gradle.properties）。
+# libs/ 仅用于放置无法从公共仓库获取的 jar（Net Music 软联动 netmusic.jar）。
+libs/
+!libs/.gitkeep
+libs_backup/
+
+# ===== 本地测试脚手架 =====
+test-tools/
+nettest/
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 日志 / 临时文件 =====
+*.log
+*.tmp
+*.bak
