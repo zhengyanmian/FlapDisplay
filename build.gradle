@@ -10,12 +10,9 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 // ===== 依赖仓库 =====
 // 国内镜像优先；Create 及其传递依赖分散在下面这些 maven 仓库
 repositories {
-    // NeoForged 官方仓库的国内镜像（放最前，避免直连 maven.neoforged.net 被重置）
-    maven {
-        name = "NeoForged Mirror (MinecraftForge CN)"
-        url = "https://maven.neoforged.net/releases"
-        // 直连不稳时下面的镜像兜底
-    }
+    // NeoForged 官方仓库（moddev 插件与 neoforge 依赖的来源）。
+    // 注意：该域名国内偶发 "Connection reset by peer"，构建失败多为网络抖动，重试即可。
+    maven { url = "https://maven.neoforged.net/releases" }
     maven { url = "https://maven.aliyun.com/repository/public" }
     maven { url = "https://maven.createmod.net" }
     maven { url = "https://maven.ithundxr.dev/snapshots" }
@@ -46,6 +43,25 @@ neoForge {
     }
 }
 
+// ===== 平铺嵌入第三方 jar（避免 jarJar 嵌套触发 NeoForge SecureJar 读取 bug）=====
+// zxing / jcodec / TwelveMonkeys 均为纯 Java，解压进 jar 根目录后即为普通 class 条目。
+//
+// 【为什么不用 configurations.runtimeClasspath】
+// runtimeClasspath 里混有大量与 mod 打包无关的条目（如 moddev 插件的 DevLaunch、
+// Flywheel 运行时等）。从中去"反查"需要的 jar，会把这些也一并拖进来解析：
+// 离线构建直接失败（DevLaunch 无缓存），在线构建也会做无谓的网络请求。
+//
+// 正确做法：声明一个【专用配置 embeddedLibs】，只挂确实要嵌入的库，
+// mod 的 jar 只从它取件。职责清晰，且完全不受其他依赖解析影响。
+//
+// 注意：配置必须先于 dependencies{} 声明（Gradle 按脚本顺序求值）。
+configurations {
+    embeddedLibs {
+        canBeConsumed = false
+        canBeResolved = true
+    }
+}
+
 dependencies {
     // ===== 机械动力 Create（前置）=====
     // slim jar 不含传递依赖，需手动声明 Ponder / Flywheel / Registrate
@@ -69,53 +85,55 @@ dependencies {
 
     // ===== 以下第三方库统一走 Maven 坐标（原先是 libs/*.jar 本地文件）=====
     // 依赖来源改为声明式，仓库里不再需要提交第三方二进制，clone 后可直接编译。
-    // 但【仍然平铺嵌入】进 mod jar（见下方 jar 任务），因为 jarJar 的嵌套 jar
-    // 会触发 NeoForge SecureJar 读取 bug（invalid stored block lengths），
-    // 平铺成普通 class 条目才是安全的。
+    //
+    // 【为什么用 compileOnly + embeddedLibs 两个配置】
+    // 这些库最终会被「平铺嵌入」进 mod jar（见文件末尾的 jar 任务），
+    // 所以：
+    //   compileOnly   —— 只负责编译期能看见这些类，不进 runtimeClasspath
+    //   embeddedLibs  —— 只负责打包时把 jar 取出来解压平铺
+    // 不用 implementation 是刻意的：implementation 会把它们放进 runtimeClasspath，
+    // 而 NeoForge 运行时并不需要（类已在 jar 里），反而增加解析与冲突风险。
+    //
+    // 平铺而非 jarJar 嵌套：嵌套 jar 会触发 NeoForge SecureJar 读取 bug
+    // （invalid stored block lengths），平铺成普通 class 条目才安全。
 
     // ZXing 二维码生成（扫码登录用；zxing-core 零传递依赖）
-    implementation("com.google.zxing:core:${zxing_version}")
+    compileOnly("com.google.zxing:core:${zxing_version}")
 
     // JCodec 视频解码（MP4/M4V/MOV，纯 Java，H.264）
     // jcodec-core 解码 + jcodec-javase 提供 AWTUtil（YUV→BufferedImage）
-    implementation("org.jcodec:jcodec:${jcodec_version}")
-    implementation("org.jcodec:jcodec-javase:${jcodec_version}")
+    compileOnly("org.jcodec:jcodec:${jcodec_version}")
+    compileOnly("org.jcodec:jcodec-javase:${jcodec_version}")
 
     // TwelveMonkeys WebP 解码（纯 Java；处理被误命名为 .png/.jpg 的 WebP 图）
     // imageio-core 运行期依赖 common-lang（com.twelvemonkeys.lang.Validate），
-    // 由 maven 传递依赖自动带出；三件套版本必须一致，统一用 twelvemonkeys_version。
-    implementation("com.twelvemonkeys.imageio:imageio-webp:${twelvemonkeys_version}")
-    implementation("com.twelvemonkeys.imageio:imageio-core:${twelvemonkeys_version}")
-    implementation("com.twelvemonkeys.common:common-lang:${twelvemonkeys_version}")
+    // 三件套版本必须一致，统一用 twelvemonkeys_version。
+    compileOnly("com.twelvemonkeys.imageio:imageio-webp:${twelvemonkeys_version}")
+    compileOnly("com.twelvemonkeys.imageio:imageio-core:${twelvemonkeys_version}")
+    compileOnly("com.twelvemonkeys.common:common-lang:${twelvemonkeys_version}")
+
+    // 打包取件配置：只声明确实要嵌入的库
+    embeddedLibs("com.google.zxing:core:${zxing_version}") { transitive = false }
+    embeddedLibs("org.jcodec:jcodec:${jcodec_version}") { transitive = false }
+    embeddedLibs("org.jcodec:jcodec-javase:${jcodec_version}") { transitive = false }
+    // TwelveMonkeys 走传递依赖，确保 common-lang 被自动带出
+    embeddedLibs("com.twelvemonkeys.imageio:imageio-webp:${twelvemonkeys_version}")
+    embeddedLibs("com.twelvemonkeys.imageio:imageio-core:${twelvemonkeys_version}")
+    embeddedLibs("com.twelvemonkeys.common:common-lang:${twelvemonkeys_version}")
 }
 
+// ===== 打包：把 embeddedLibs 里的 jar 平铺进 mod jar =====
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
 }
 
-// ===== 平铺嵌入第三方 jar（避免 jarJar 嵌套触发 NeoForge SecureJar 读取 bug）=====
-// zxing / jcodec / TwelveMonkeys 均为纯 Java，解压进 jar 根目录后即为普通 class 条目。
-//
-// 依赖来源已是 Maven 坐标，这里从【运行时 classpath】里挑出需要嵌入的 jar 再平铺，
-// 与之前从 libs/ 读文件的效果一致，但仓库不再需要提交第三方二进制。
-// 排除 META-INF/**：尤其是 SPI 服务文件（TwelveMonkeys 的 ImageReaderSpi），
-// 多个 jar 的 META-INF/services 同名文件合并会冲突；WebP reader 改为代码直接实例化。
-def shadedGroups = [
-        "com.google.zxing",        // 二维码
-        "org.jcodec",              // 视频解码
-        "com.twelvemonkeys.imageio",  // ImageIO 扩展
-        "com.twelvemonkeys.common"    // common-lang / common-io（WebP 依赖）
-]
-
 tasks.named("jar") {
     from({
-        configurations.runtimeClasspath.findAll { f ->
-            f.name.endsWith(".jar") && shadedGroups.any { g ->
-                // 用反向域名路径匹配组名：com.google.zxing -> com/google/zxing
-                f.path.replace('\\', '/').contains(g.replace('.', '/'))
-            }
-        }.collect { zipTree(it) }
+        configurations.embeddedLibs.findAll { it.name.endsWith(".jar") }
+                .collect { zipTree(it) }
     }) {
+        // 排除 META-INF/**：尤其是 SPI 服务文件（TwelveMonkeys 的 ImageReaderSpi），
+        // 多个 jar 的 META-INF/services 同名文件合并会冲突；WebP reader 改为代码直接实例化。
         exclude "META-INF/**"
         exclude "module-info.class"
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
