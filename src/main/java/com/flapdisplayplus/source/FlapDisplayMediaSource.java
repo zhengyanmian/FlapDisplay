@@ -220,8 +220,9 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
      * 返回 false = Create 永远不去刷新这个源 = 本类的主逻辑（含发包）成为死代码。
      *
      * 此前这里返回 false，注释还写着「必须返回 false 防止被重置」——正好写反了：
-     * 后果是刷新包从未发出，客户端 5 秒过期后媒体消失（图片/视频几秒后不见的根因）。
-     * 方法名里的 "Reset" 指的是「重置/重建显示内容」，对我们是**想要**的行为。
+     * 后果是刷新包从未发出，客户端等不到刷新就按超时清理，媒体消失
+     * （图片/视频几秒后不见的根因）。方法名里的 "Reset" 指「重置/重建显示内容」，
+     * 对我们是**想要**的行为。
      */
     @Override
     public boolean shouldPassiveReset() {
