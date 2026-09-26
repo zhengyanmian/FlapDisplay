@@ -38,6 +38,7 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.item.component.CustomData;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -59,9 +60,19 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
 
     @Inject(method = "init", at = @At("RETURN"))
     private void netmusicdisplay$addSearchButton(CallbackInfo ci) {
+        netmusicdisplay$raiseMaxLength("init");
+
         // 搜索按钮：放在「制作唱片」下方，留出空间给红字提示（tips 在制作唱片行下方显示）
+        //
+        // 【踩坑记录，勿改回 translatable】这里曾经写成
+        //   Component.translatable("netmusicdisplay.gui.search.open")
+        // 键名前缀用了 Net Music 的命名空间，而我们的语言文件里的键是
+        //   flapdisplayplus.gui.search.open
+        // 键对不上时 Minecraft 找不到翻译，会**直接把原始键名当按钮文字显示**，
+        // 于是按钮上出现一长串 "netmusicdisplay.gui.search.open"，不是「搜索」。
+        // 现在直接用字面量，绕开语言文件这一层（中文界面下本来也不需要多语言）。
         Button button = Button.builder(
-                        Component.translatable("netmusicdisplay.gui.search.open"),
+                        Component.literal("搜索"),
                         btn -> Minecraft.getInstance().setScreen(new MusicSearchScreen(this)))
                 .bounds(this.getGuiLeft() + 7, this.getGuiTop() + 62, 50, 18)
                 .build();
@@ -79,12 +90,178 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
         this.addRenderableWidget(platformToggle);
     }
 
+    /**
+     * 【致命坑，勿删】把输入框上限从原版的 19 抬到 512。
+     *
+     * 背景：Net Music 的 CDBurnerMenuScreen.init() 里对输入框调了 setMaxLength(19)。
+     * 19 是按「网易云纯数字 ID」定的，而 QQ 音乐的标识是 `qqmusic:{songmid}`。
+     *
+     * ★ songmid 实测**不全是 14 位**（2026-09-27 实测发现）：形如
+     *   `002D2rns2pbPcm`（14 位）也是合法 songmid，vkey 换地址 result=0 有 purl；
+     *   把尾部 `Pcm` 去掉反而变 101404 不存在。所以不能假设固定长度，
+     *   只能靠抬高上限来容纳。
+     *
+     * ★ 为什么必须在 init 之外**再**注入 resize：见 netmusicdisplay$onResize 的注释。
+     *   光在 init 尾部抬上限只能撑到下一次界面重建，重建后值就被截。
+     */
+    private void netmusicdisplay$raiseMaxLength(String from) {
+        if (this.textField == null) {
+            MusicNetIntegration.LOGGER.error("[刻录机] {} 抬高上限失败：textField 为 null", from);
+            return;
+        }
+        this.textField.setMaxLength(512);
+        MusicNetIntegration.LOGGER.info("[刻录机] {} 已把输入框上限抬到 512（当前值长度={}）",
+                from, this.textField.getValue() == null ? -1 : this.textField.getValue().length());
+    }
+
+    /**
+     * 【终极修复 2026-09-27 三次】回填的完整值被界面重建截断后，**自己把值补回来**。
+     *
+     * ★ 为什么前三轮「抬上限」全都治不好 —— 原因是顺序，不是值：
+     *   `EditBox.setMaxLength(n)` **只写 maxLength 字段，不会重新处理已存的值**；
+     *   真正截断发生在 `setValue()` 内部的 `substring(0, maxLength)`。
+     *   而 Net Music 的 `init()` 里固定是「先 setValue(旧值)、后 setMaxLength(19)」，
+     *   我们的注入又在整个方法 RETURN 之后才跑 →
+     *   **等我们能抬上限时，值早就被切完了，抬上限只能救「下一次写入」。**
+     *
+     * ★ 实测证据（04:22:08 一组日志）：
+     *     08.305 回填 22 位 → 实际存入 22 位     ← 写入成功
+     *     08.307 init 注入：当前值长度=19        ← 仅 2ms 后重建，值被重切
+     *     13.036 点制作 → mid 仅 11 位           ← 你看到的就是这串
+     *   19 = `qqmusic:`(8) + 11，末尾 `Pcm` 被切掉。
+     *
+     * ★ 所以不能再依赖「上限」这条脆弱路径，改为**记住完整值、被截断就补回**：
+     *   ① 回填时把完整值记进 pending（见 netmusicdisplay$applySearchResult）
+     *   ② 每次进入 init（@At("HEAD")，**早于原版 setValue/setMaxLength**）就尝试补值
+     *   ③ 用「前缀 + 已存值是完整值的前缀 + 已存值确实比完整值短」三重条件判定，
+     *      只有确认是「被截断」才补，不会覆盖用户手工输入的其他内容
+     *   ④ 补成功即清空 pending（一次性），避免每次打开界面都强行回写
+     *
+     * @return 是否实际补写了值
+     */
+    private boolean netmusicdisplay$restoreTruncatedValue(String from) {
+        String want = this.netmusicdisplay$pendingValue;
+        if (want == null || this.textField == null) {
+            return false;
+        }
+        String have = this.textField.getValue();
+        if (have == null) {
+            have = "";
+        }
+        // 已经完整了（重建时上限够大所以没被切）→ 清 pending，收工
+        if (have.equals(want)) {
+            this.netmusicdisplay$pendingValue = null;
+            MusicNetIntegration.LOGGER.info("[刻录机] {} 值已是完整的 {} 位，无需补写", from, want.length());
+            return false;
+        }
+        // 只补「明显是它被截断的前缀」的情况，避免动用户的正常输入
+        boolean looksTruncated = want.startsWith(have) && have.length() < want.length();
+        if (!looksTruncated) {
+            this.netmusicdisplay$pendingValue = null;
+            MusicNetIntegration.LOGGER.info(
+                    "[刻录机] {} 当前值 '{}'（{} 位）与待补值无关，放弃补写",
+                    from, have, have.length());
+            return false;
+        }
+        this.textField.setMaxLength(512);
+        this.textField.setValue(want);
+        String after = this.textField.getValue();
+        this.netmusicdisplay$pendingValue = null;
+        MusicNetIntegration.LOGGER.info(
+                "[刻录机] {} 补回被截断的值：'{}'（{} 位）→ '{}'（{} 位）",
+                from, have, have.length(), after, after == null ? -1 : after.length());
+        return true;
+    }
+
+    /** 待补写的完整回填值（被界面重建截断时用来补回）；null 表示无需补 */
+    @Unique
+    private String netmusicdisplay$pendingValue;
+
+    /**
+     * 【关键修复 2026-09-27 四次】把「补值」提前到 init 的 HEAD。
+     *
+     * 必须 HEAD 而不是 RETURN：原版 init 里是
+     *   ① 存下旧值 ② new EditBox（上限=默认 32）③ setValue(旧值) ④ setMaxLength(19)
+     * 只有在我们先补一次（把上限抬起来）之后，后续 ③ 的 setValue 才不会被切。
+     * RETURN 注入只能事后补救，而 setMaxLength 不会让被切的字符长回来。
+     */
+    @Inject(method = "init", at = @At("HEAD"))
+    private void netmusicdisplay$restoreOnInit(CallbackInfo ci) {
+        // 先无条件抬上限：此时 textField 可能还是上一轮的实例（原版 9-24 行的保存分支要用它），
+        // 也可能是 null（首次打开）。抬了不亏，下面补值还会再抬一次。
+        if (this.textField != null) {
+            this.textField.setMaxLength(512);
+        }
+        netmusicdisplay$restoreTruncatedValue("init(HEAD)");
+    }
+
+    /**
+     * resize 同样先补值再让原版继续。
+     *
+     * 注意 `CDBurnerMenuScreen.resize` 的实现是「存旧值 → super.resize → setValue(旧值)」，
+     * 若我们只在 RETURN 补，的确也能修好（它是 setValue 之后），
+     * 但 HEAD 补的成本一样、且能顺带抬高上限，让原版自己那次 setValue 就不被切。
+     */
+    @Inject(method = "resize", at = @At("HEAD"))
+    private void netmusicdisplay$restoreOnResize(Minecraft mc, int width, int height, CallbackInfo ci) {
+        if (this.textField != null) {
+            this.textField.setMaxLength(512);
+        }
+    }
+
+    /** 原 RETURN 注入保留：兜底抬上限（见下） */
+    @Inject(method = "resize", at = @At("RETURN"))
+    private void netmusicdisplay$onResize(Minecraft mc, int width, int height, CallbackInfo ci) {
+        netmusicdisplay$raiseMaxLength("resize");
+        netmusicdisplay$restoreTruncatedValue("resize(RETURN)");
+    }
+
+    /**
+     * 【修复截断的核心】拿疑似被截断的 mid 去搜索缓存反查完整值。
+     *
+     * 为什么这是终解：截断**必然**产生「完整值的前缀」，所以前缀匹配一定能命中，
+     * 不需要猜长度、不需要猜阈值、也不依赖任何「上限抬没抬起来」的假设。
+     *
+     * @return 完整 songmid；无法补全时返回 null
+     */
+    private static String netmusicdisplay$healMidFromCache(String mid) {
+        try {
+            return QqSearchCache.findFullMidByPrefix(mid);
+        } catch (Throwable t) {
+            MusicNetIntegration.LOGGER.error("[刻录机] 缓存反查失败 mid=" + mid, t);
+            return null;
+        }
+    }
+
+    /**
+     * 是否「看起来像被截断」。仅用于**给用户提示**，不用于拦截流程
+     * （合法的 songmid 实测 14 位，但长度不是可靠判据，所以这里只是启发式）。
+     */
+    private static boolean netmusicdisplay$looksTruncated(String mid) {
+        return mid != null && mid.length() < 12;
+    }
+
+
     /** 把搜索结果标识写入歌曲输入框（网易云分享链接 / qqmusic:{mid}） */
     @Override
     public void netmusicdisplay$applySearchResult(String value) {
-        if (this.textField != null) {
-            this.textField.setValue(value);
+        if (this.textField == null) {
+            MusicNetIntegration.LOGGER.error("[刻录机] 回填失败：textField 为 null");
+            return;
         }
+        // ★ 先记下完整值：界面重建会重跑 init()，那时 setValue(旧值) 可能被 19 位上限截断。
+        //   有了这个 pending，init(HEAD) 注入就能把被切掉的部分补回来（见 restoreTruncatedValue）。
+        this.netmusicdisplay$pendingValue = value;
+        // 写入前后各记一次长度：写入前是"应该写进去的"，写入后是"实际存下来的"。
+        // 两者不一致即证明截断发生在 setValue 内部（maxLength 仍太小），
+        // 而不是发生在别处——这条日志能一眼区分故障位置。
+        MusicNetIntegration.LOGGER.info("[刻录机] 回填输入框：待写入 '{}'（{} 位）",
+                value, value == null ? -1 : value.length());
+        this.textField.setMaxLength(512);
+        this.textField.setValue(value);
+        String after = this.textField.getValue();
+        MusicNetIntegration.LOGGER.info("[刻录机] 回填结果：实际存入 '{}'（{} 位）",
+                after, after == null ? -1 : after.length());
     }
 
     @Inject(method = "handleCraftButton", at = @At("HEAD"), cancellable = true)
@@ -120,6 +297,37 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
             this.tips = Component.literal("QQ 音乐 ID 为空");
             return;
         }
+        // 【终局修复 2026-09-27 三次 —— 别再靠长度猜，靠缓存把值救回来】
+        //
+        // 前几版这里写的是 `mid.length() < 14` / `< 12` 报错，思路都是「用长度识别截断」。
+        // 实测证明这条路走不通也不必要：
+        //   · songmid 合法长度并非固定（`002D2rns2pbPcm` 14 位合法，去掉 `Pcm` 反而 101404）；
+        //   · 被截断的值和真实短值靠长度区分不开；
+        //   · **最关键：截断成的 11 位本身就是完整 songmid 的前缀**，而我们手上
+        //     一定存着完整值（QqSearchCache 在搜索结果生成时就 put 了，
+        //     QQMusicSearchSource 里还做了预填，保证不依赖单点调用）。
+        //
+        // 所以正确做法：**拿被截断的前缀去缓存里反查完整 mid**，查到就自动补全，
+        // 用户完全无感。查不到（历史遗留值 / 手工输入）才提示。
+        String healed = netmusicdisplay$healMidFromCache(mid);
+        if (healed != null && !healed.equals(mid)) {
+            MusicNetIntegration.LOGGER.warn(
+                    "[刻录机] 检测到 mid 被截断：'{}'（{} 位）→ 已按搜索缓存补全为 '{}'（{} 位）",
+                    mid, mid.length(), healed, healed.length());
+            mid = healed;
+            // 顺手把界面上的值也修好，避免用户重复踩
+            if (this.textField != null) {
+                this.textField.setMaxLength(512);
+                this.textField.setValue(QQMusicSearchSource.URL_PREFIX + healed);
+            }
+        } else if (netmusicdisplay$looksTruncated(mid) && healed == null) {
+            // 缓存里也没有 → 大概率是手工输入的残缺值，明确提示
+            MusicNetIntegration.LOGGER.error(
+                    "[刻录机] mid 过短（{} 位）'{}' 且缓存中查不到完整值，疑似手工输入的残缺 ID",
+                    mid.length(), mid);
+            this.tips = Component.literal("QQ ID 疑似不完整（仅 " + mid.length() + " 位），请用「搜索」重新选歌");
+            return;
+        }
 
         // QQ 刻录已打通（2026-08-28）。流程：
         //   1. 先用搜索结果缓存（QqSearchCache）拿到歌名/时长/mediaMid，避免额外网络请求；
@@ -142,8 +350,12 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                         return;
                     }
                     if (info == null) {
-                        // 未换到任何档位的播放地址：VIP 歌曲未登录，或歌曲已下架
-                        this.tips = Component.literal("QQ 音乐解析失败：需要登录 QQ 或歌曲不可用");
+                        // 组装失败。真因可能是「元数据缺失」「歌曲不存在/已下架」
+                        // 「VIP 歌曲未登录」等多种，具体原因已在 buildQqSongInfo
+                        // 里按分支记了带原因标记的日志，这里不再猜——
+                        // 历史上这里写死「需要登录 QQ」，把「mid 被输入框截断」
+                        // 误报成登录问题，害得排查方向跑偏（见 init() 里的注释）。
+                        this.tips = Component.literal("QQ 音乐解析失败：详情见日志（非必然是登录问题）");
                         return;
                     }
                     if (!NetMusicCompat.sendSongToServer(info)) {
@@ -194,12 +406,30 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
             }
 
             // 预检：确认这首歌当前能换到播放地址。换不到就不做唱片
-            // （典型原因：VIP 歌曲未登录、歌曲已下架）。
+            // （典型原因：VIP 歌曲未登录、歌曲已下架、或 mid 本身有误）。
             // 加超时防止后台线程被网络异常永久挂住（HttpUtil 自身 15s+15s）。
             String probeUrl = QQMusicApi.getPlayUrl(songMid)
                     .get(40, java.util.concurrent.TimeUnit.SECONDS);
             if (probeUrl == null || probeUrl.isBlank()) {
-                MusicNetIntegration.LOGGER.info("[刻录机] QQ 歌曲无可用播放档位，拒绝刻录 mid={}", songMid);
+                // 换不到地址时，顺手探一次详情接口，把真因区分开再记日志，
+                // 免得又归到「需要登录」这个万能借口上。
+                String reason;
+                QQMusicApi.QQSong detail = QQMusicApi.getSongDetail(songMid);
+                if (detail == null) {
+                    reason = "歌曲不存在或已下架（详情接口无此 mid）";
+                } else {
+                    boolean hasMeta = detail.title != null && !detail.title.isBlank() && detail.durationSec > 0;
+                    if (!hasMeta) {
+                        reason = "歌曲元数据不完整（歌名/时长为空）";
+                    } else if (detail.vip && !com.flapdisplayplus.music.qq.QqCredentialManager.hasValidCredential()) {
+                        reason = "VIP 歌曲且未登录（已登录可播放）";
+                    } else if (detail.vip) {
+                        reason = "VIP 歌曲且已登录，但当前账号无该曲版权";
+                    } else {
+                        reason = "免费歌曲却换不到地址，可能被版权方限制或接口限流，可稍后重试";
+                    }
+                }
+                MusicNetIntegration.LOGGER.warn("[刻录机] QQ 歌曲无可用播放档位，拒绝刻录 mid={} 原因={}", songMid, reason);
                 return null;
             }
             if (songName == null || songName.isBlank() || duration <= 0) {
