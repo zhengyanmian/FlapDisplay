@@ -124,10 +124,17 @@ if [ "$DO_PUSH" -eq 1 ]; then
     fi
 
     # 检测 SSH 认证
-    if ! ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -T git@github.com 2>&1 \
-            | grep -q "successfully authenticated"; then
+    # 注意：git 的 SSH 认证检查**不能靠 grep 具体措辞**——GitHub 返回的是
+    #   "Hi <user>! You've successfully authenticated, but GitHub does not provide shell access."
+    # 曾因 grep "successfully authenticated"（少了 "You've "）而误判为「公钥未添加」，
+    # 于是在公钥明明已生效的情况下反复提示用户去加 key（假阴性）。
+    # 这里改为判断 ssh -T 的退出码：GitHub 认证成功但无 shell 时返回 1，
+    # 所以真正可靠的判据是「输出里含 Hi <something>」或「不含 Permission denied」。
+    SSH_OUT=$(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -T git@github.com 2>&1 || true)
+    if ! printf '%s' "$SSH_OUT" | grep -qE "Hi [A-Za-z0-9_-]+!|successfully authenticated"; then
         echo ""
         echo "      [!] SSH 认证未通过 —— 公钥可能还没添加到 GitHub。"
+        echo "      ssh -T 输出：$SSH_OUT"
         echo ""
         echo "      请完成一次（只需一次）:"
         echo "        1. 打开 https://github.com/settings/keys"

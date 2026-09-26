@@ -125,7 +125,10 @@ if "%DO_PUSH%"=="1" (
     )
 
     REM 检测 SSH 认证
-    ssh -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1 | findstr /c:"successfully authenticated" >nul
+    REM 不要匹配 "successfully authenticated" —— GitHub 返回
+    REM   "Hi <user>! You've successfully authenticated, ..."
+    REM 完整短语匹配会假阴性。改为匹配 "Hi " 前缀。
+    ssh -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1 | findstr /c:"Hi " >nul
     if errorlevel 1 (
         echo.
         echo       [!] SSH 认证未通过 —— 公钥可能还没添加到 GitHub。

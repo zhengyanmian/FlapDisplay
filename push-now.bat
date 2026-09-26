@@ -27,8 +27,11 @@ git remote get-url origin
 echo.
 
 REM 先检查 SSH 认证是否就绪
+REM 注意：不要 grep "successfully authenticated" —— GitHub 实际返回
+REM   "Hi <user>! You've successfully authenticated, but GitHub does not provide shell access."
+REM 用完整短语匹配会假阴性（公钥已生效却提示去添加）。改为匹配 "Hi " 前缀。
 echo [检查] 测试 SSH 认证 ...
-ssh -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1 | findstr /c:"successfully authenticated" >nul
+ssh -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1 | findstr /c:"Hi " >nul
 if errorlevel 1 (
     echo.
     echo [提示] SSH 认证未通过，公钥可能还没添加到 GitHub。
