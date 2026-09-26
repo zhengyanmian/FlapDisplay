@@ -37,6 +37,11 @@ public class FlapDisplayPlus {
         // 注册显示源
         ModDisplaySources.register(modEventBus);
 
+        // 服务端方块事件：拆除显示链接器时主动清空对应翻牌的媒体叠加
+        // （否则链接器 BE 消失后没有任何包会发出，画面会一直残留）
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                com.flapdisplayplus.event.ServerBlockEvents::onBlockBroken);
+
         // ===== 网络音乐机软联动（可选模块）=====
         // 检测到 Net Music 才注册音乐显示源 / 解析器 / 动力臂交互点；
         // 未安装则整个模块跳过（界面显示"请安装网络音乐机"提示）。

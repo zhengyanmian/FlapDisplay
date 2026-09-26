@@ -19,8 +19,11 @@ import com.flapdisplayplus.net.MediaResolverManager;
 import com.flapdisplayplus.net.NetMediaManager;
 import com.flapdisplayplus.net.StreamDownloader;
 import com.mojang.blaze3d.platform.NativeImage;
+import com.simibubi.create.content.trains.display.FlapDisplayBlockEntity;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
 
 import javax.imageio.ImageIO;
@@ -125,10 +128,16 @@ public final class MediaManager {
     }
 
     /**
-     * 客户端每刻调用：清理已暂停且长时间无人观看的播放器（防 VIDEOS Map 只增不减的泄漏，
-     * 以及 SourceDataLine 原生资源泄漏）。仅处理 idle-expired 的实例，进行中的播放不受影响。
+     * 客户端每刻调用：
+     * 1) 清理已暂停且长时间无人观看的播放器（防 VIDEOS Map 只增不减的泄漏，
+     *    以及 SourceDataLine 原生资源泄漏）。仅处理 idle-expired 的实例，进行中的播放不受影响。
+     * 2) 【2026-09-27 新增】方块存在性核对：翻牌显示器被拆除后，注册表条目仍在（要等 30s 过期），
+     *    媒体画面/声音会「继续显示」——这是用户明确反馈的问题。这里每刻核对一次：
+     *    注册坐标处若已不是翻牌 BE，立即注销并停掉其媒体（视频声音随之停止）。
+     * 3) 【新增】孤儿视频回收：注册表已不再引用任何视频时停止它（双保险）。
      */
     public static void tick() {
+        sweepRemovedDisplays();
         if (VIDEOS.isEmpty()) {
             return;
         }
@@ -140,6 +149,71 @@ public final class MediaManager {
                 e.getValue().stop();
             }
         }
+    }
+
+    /**
+     * 核对注册表中每个翻牌坐标处是否仍有翻牌 BE；已被拆除/结构断开的立即注销。
+     *
+     * 关键：必须先用 isLoaded(pos) 区分「区块未加载（玩家走远）」与「方块真被移除」，
+     * 否则玩家一走出加载范围就会误删配置（旧的 30s 过期注释里记过这个坑）。
+     */
+    private static void sweepRemovedDisplays() {
+        if (MediaRenderRegistry.size() == 0) {
+            return;
+        }
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level == null) {
+            return;
+        }
+        for (BlockPos pos : new java.util.ArrayList<>(MediaRenderRegistry.keys())) {
+            try {
+                if (!level.isLoaded(pos)) {
+                    continue; // 区块未加载：不能判定为已拆除
+                }
+                if (level.getBlockEntity(pos) instanceof FlapDisplayBlockEntity) {
+                    continue; // 还在
+                }
+                MediaRenderRegistry.MediaInfo mi = MediaRenderRegistry.peek(pos);
+                MediaRenderRegistry.remove(pos);
+                FlapDisplayPlus.LOGGER.info("[Media] 翻牌已被拆除，注销媒体显示: {}", pos);
+                if (mi != null) {
+                    stopVideoIfUnreferenced(mi.mediaPath);
+                }
+            } catch (Throwable t) {
+                FlapDisplayPlus.LOGGER.debug("[Media] 方块核对异常 {}", pos, t);
+            }
+        }
+    }
+
+    /** 若该媒体路径已不再被任何注册项引用，则停止其视频播放器（音频随之停止） */
+    private static void stopVideoIfUnreferenced(String mediaPath) {
+        if (mediaPath == null || mediaPath.isEmpty()) {
+            return;
+        }
+        for (BlockPos p : new java.util.ArrayList<>(MediaRenderRegistry.keys())) {
+            MediaRenderRegistry.MediaInfo other = MediaRenderRegistry.peek(p);
+            if (other != null && mediaPath.equals(other.mediaPath)) {
+                return; // 仍被别的翻牌引用
+            }
+        }
+        stopVideoByMediaPath(mediaPath);
+    }
+
+    /** 按「媒体输入路径」（网络链接/本地文件）停止对应的实时媒体播放器 */
+    public static void stopVideoByMediaPath(String mediaPath) {
+        if (mediaPath == null || mediaPath.isEmpty()) {
+            return;
+        }
+        String local;
+        try {
+            local = localPath(mediaPath);
+        } catch (Throwable t) {
+            local = null;
+        }
+        if (local == null) {
+            local = mediaPath; // 兜底：本地输入时 key 即路径本身
+        }
+        stopVideo(local);
     }
 
     /** 图片宽度（未加载返回 0） */
@@ -708,7 +782,7 @@ public final class MediaManager {
         }
     }
 
-    /** 资源重载时清空全部缓存（停止所有视频播放器） */
+    /** 资源重载时清空全部缓存（停止所有视频播放器与网页图流） */
     public static void clearCache() {
         TEXTURES.clear();
         DIMENSIONS.clear();

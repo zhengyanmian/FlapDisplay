@@ -28,6 +28,12 @@ public final class Config {
 
     /** 视频显示帧率上限（解码抽帧）：源帧率高于此值时抽帧显示，降低 CPU 占用 */
     public static final ModConfigSpec.IntValue MEDIA_VIDEO_FPS;
+    /** 媒体叠加层横向微调（1/32 方块/单位） */
+    public static final ModConfigSpec.IntValue MEDIA_MEDIA_OFFSET_X;
+    /** 媒体叠加层纵向微调（1/32 方块/单位，正数向下） */
+    public static final ModConfigSpec.IntValue MEDIA_MEDIA_OFFSET_Y;
+    /** 媒体叠加层四周内缩（1/32 方块/单位） */
+    public static final ModConfigSpec.IntValue MEDIA_MEDIA_INSET;
 
     /** 静态图片纹理长边上限（像素）：图片只解码一次，可给较大值保证清晰 */
     public static final ModConfigSpec.IntValue MEDIA_IMAGE_MAX_DIM;
@@ -72,12 +78,33 @@ public final class Config {
                 .define("media.videoSound", true);
 
         MEDIA_VIDEO_MAX_DIM = builder
-                .comment("视频纹理长边上限(像素)，默认1024。越大越清晰但越吃性能；卡顿时调低(如768/512)。")
-                .defineInRange("media.videoMaxDim", 1024, 64, 4096);
+                .comment("视频纹理长边上限(像素)，默认 256。",
+                        "为什么默认从 1024 降到 256：实测视频卡顿的主因不是解码，而是每帧在【主线程】",
+                        "把像素逐个写进纹理（w*h 次 setPixelRGBA）。1024×576≈59 万次/帧 → 主线程被压垮。",
+                        "翻牌面板在屏幕上通常只有一两百像素宽，256 已完全够看。",
+                        "调高会更清晰但主线程开销按面积平方增长；卡顿就继续调低（如 128）。")
+                .defineInRange("media.videoMaxDim", 256, 64, 4096);
 
         MEDIA_VIDEO_FPS = builder
                 .comment("视频显示帧率上限，默认24。卡顿严重时调低(如15/20)；追求流畅与省CPU。")
                 .defineInRange("media.videoFps", 24, 1, 60);
+
+        MEDIA_MEDIA_OFFSET_X = builder
+                .comment("媒体叠加层相对翻牌面板的横向微调（单位 = 1/32 方块，即约 0.5 像素；2 = 1 像素）。",
+                        "用于消除「图片/视频与方块错开一个像素」的观感。正数向右。")
+                .defineInRange("media.offsetX", 0, -32, 32);
+
+        MEDIA_MEDIA_OFFSET_Y = builder
+                .comment("媒体叠加层相对翻牌面板的纵向微调（单位 = 1/32 方块，即约 0.5 像素；2 = 1 像素）。",
+                        "正数向下。")
+                .defineInRange("media.offsetY", 0, -32, 32);
+
+        MEDIA_MEDIA_INSET = builder
+                .comment("媒体叠加层四周内缩量（单位 = 1/32 方块，2 单位 = 1 像素）。",
+                        "默认 0 = 与翻牌【可见面板】四边完全对齐（消除「与方块差一个像素」）。",
+                        "正数向内缩（避免压住面板边框）；负数向外扩 —— 例如 -3 可把可见面板",
+                        "之外的边框一起盖住，让媒体铺满整块面板。")
+                .defineInRange("media.inset", 0, -16, 16);
 
         MEDIA_IMAGE_MAX_DIM = builder
                 .comment("静态图片纹理长边上限(像素)，默认2048。图片只解码一次，可给大值保证清晰。")

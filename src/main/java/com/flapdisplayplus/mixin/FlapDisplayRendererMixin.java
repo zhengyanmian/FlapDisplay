@@ -19,6 +19,7 @@ package com.flapdisplayplus.mixin;
 import com.flapdisplayplus.FlapDisplayPlus;
 import com.flapdisplayplus.client.MediaManager;
 import com.flapdisplayplus.client.MediaRenderRegistry;
+import com.flapdisplayplus.config.Config;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.simibubi.create.content.trains.display.FlapDisplayBlockEntity;
@@ -118,68 +119,98 @@ public abstract class FlapDisplayRendererMixin {
             return;
         }
 
-        // ===== 坐标系（反编译 renderSafe + FlapDisplaySection 字节码确认）=====
-        // Create 在画内容前先 scale(0.03125)，故注入点为【像素坐标系】：
-        //   - 注入点（panel popPose BEFORE）时：行循环已跑完，PoseStack 的 y = 显示带底部
-        //     （每行 translate(0,16,0) 累积）！必须回退到顶部再画，否则矩形画在显示带
-        //     【下方】被遮挡（"挖角才显示"根因）。
-        //   - x=0 是显示带左缘（controller 左缘），显示带向右延伸，宽 = xSize*32 单位
-        //     （xSize*16 是字符数基准：xSize 块 × 16 字符/块 × 2 单位/字符 = xSize*32）
-        //   - 总行数 lines = ySize*2（每块 2 行），高 = lines*16 单位
-        //   - z=0.5 为面板前沿（translate(0,0,0.5) 之后）
+        // ===== 坐标系（反编译 renderSafe + FlapDisplayRenderOutput.finish 确认）=====
+        // Create 在画内容前先 scale(0.03125)，故注入点为【像素坐标系】：1 单位 = 1/32 方块。
+        //   - 注入点（band popPose BEFORE）时：行循环已跑完，PoseStack 的 y = 显示带底部
+        //     （每行 translate(0,16,0) 累积，行循环自身的 translate 已被 popPose 撤销）
+        //     → 必须回退到顶部再画，否则矩形画在显示带【下方】被遮挡。
+        //   - x=0 是显示带左缘，显示带宽 = xSize*32 单位，高 = lines*16 单位（lines = ySize*2）。
         int lines = Math.max(be.getLines().size(), Math.max(2, be.ySize * 2));
         float w = Math.max(1.0f, be.xSize) * 32f;   // 显示带宽（像素单位，x 从 0 到 w）
         float h = lines * 16f;                       // 显示带高（像素单位）
-        float z = 1.0f;                              // 面板前沿 0.5，取 1.0 防共面闪烁
+        // z 从 1.0 降到 0.05：旧的 1.0 = 面板【前方 1/32 方块】，才是真正的视差来源（已消除）。
+        // 防共面闪烁改由 entityCutoutNoCullZOffset 承担：反汇编 neoforge-*-merged.jar 确认它
+        // 走 VIEW_OFFSET_Z_LAYERING，只把 modelview 等比缩小 0.99975586（≈0.024% 的纯深度
+        // 偏置），既无平移也无 polygon offset —— 因此「与方块差一个像素」不可能是深度造成的。
+        float z = 0.05f;
+
+        // ===== 可见面板（flap plate）≠ 显示带矩形 =====
+        // 【2026-09-27 修正「与方块差一个像素」的真正原因（位置性，非深度）】
+        // 由 create 字节码：每行 translate((xSize*16 - f14/2) + 1, 4.5, 0)、每节
+        // translate(section.size + (hasGap?8:1), 0, 0)，面板机体则由
+        // BakedGlyph.Effect(-1, 9, section.size, -2, 0.01) 绘制。对「单节、占满整条带」
+        // 这一常见排版，合并后【可见面板】在带局部坐标里是：x ∈ [-0.5, w+0.5]、y ∈ [2.5, h-2.5]。
+        // 旧代码按整条显示带 [0,w]×[0,h] 画 ⇒ 上下各多出 2.5 单位（2 单位 = 1 像素，
+        // 即约 1.25 像素 —— 正是用户说的「与方块差一个像素」）、左右各少 0.5 单位。
+        // 现在把矩形对齐到可见面板，再由 media.offsetX/offsetY/inset 微调。
+        // 注：多节、带 gap 的排版会改变左右边界（每处 gap 使 f14 +8），此处按最常见的
+        //      「单节占满」处理；若要连整块面板的边框一起盖住，把 media.inset 设成负数即可。
+        final float plateX = -0.5f;   // 可见面板左缘（相对显示带左缘）
+        final float plateY = 2.5f;    // 可见面板上缘（相对显示带顶部）
+        float plateW = w + 1f;        // 可见面板宽 = (w + 0.5) - (-0.5)
+        float plateH = h - 5f;        // 可见面板高 = (h - 2.5) - 2.5
 
         // 图片原始尺寸（FIT/COVER 比例计算）
         float iw = MediaManager.getTextureWidth(info.mediaPath);
         float ih = MediaManager.getTextureHeight(info.mediaPath);
 
+        // ===== 叠加层微调（可配置）=====
+        // offset 与 inset 单位同为 1/32 方块（≈0.5 像素）：2 单位 = 1 像素。
+        // inset > 0 四边向内缩；inset < 0 四边向外扩（例如 -3 可盖住可见面板之外的边框）。
+        int cfgOffX = Config.MEDIA_MEDIA_OFFSET_X.get();
+        int cfgOffY = Config.MEDIA_MEDIA_OFFSET_Y.get();
+        int cfgInset = Config.MEDIA_MEDIA_INSET.get();
+        // 有效绘制矩形 = 可见面板四边各内缩 inset（负值即外扩）
+        float bw = Math.max(1f, plateW - cfgInset * 2f);
+        float bh = Math.max(1f, plateH - cfgInset * 2f);
+
         ms.pushPose();
-        // 关键：回退到显示带顶部（当前 y = 显示带底部）
-        ms.translate(0, -lines * 16f, 0);
+        // 关键：回退到显示带顶部（注入点 y = 显示带底部），对齐可见面板，再叠加微调偏移与内缩
+        ms.translate(plateX + cfgOffX + cfgInset, -lines * 16f + plateY + cfgOffY + cfgInset, 0);
         Matrix4f pose = ms.last().pose();
-        // 独立 RenderBuffers（与 Create 的 buffer 隔离），画完立即 endBatch 提交
-        RenderType rt = RenderType.entityCutoutNoCull(frame);
+        // 独立 RenderBuffers（与 Create 的 buffer 隔离），画完立即 endBatch 提交。
+        // 【2026-09-27】改用 ZOffset 变体：它用 VIEW_OFFSET_Z_LAYERING（把 modelview 缩放
+        // 0.99975586，纯深度方向前移，无几何位移）保证我们稳定盖在面板之上，
+        // 因此可以把 z 压到近乎贴面而【不会】遮挡闪烁 —— 这正是消除「相距一个像素」的关键。
+        RenderType rt = RenderType.entityCutoutNoCullZOffset(frame);
         VertexConsumer vc = FDP_RENDER_BUFFERS.bufferSource().getBuffer(rt);
 
-        // x 从 0（显示带左缘）到 w（右缘）；y 从顶部 0 到底部 h
+        // x 从 0（显示带左缘）到 bw（右缘）；y 从顶部 0 到底部 bh
         // UV：面板顶部(y=0) ↔ v=0（纹理顶部）；底部 ↔ v=1（全图）
         String mode = info.displayMode == null ? "FIT" : info.displayMode;
         if ("STRETCH".equals(mode)) {
-            fdpRenderMediaQuad(vc, pose, 0, 0, w, h, z, 0, 0, 1, 1, light, overlay);
+            fdpRenderMediaQuad(vc, pose, 0, 0, bw, bh, z, 0, 0, 1, 1, light, overlay);
         } else if ("COVER".equals(mode) && iw > 0 && ih > 0) {
             // 保持宽高比，裁切铺满：计算 UV 窗口
-            float targetRatio = w / h;
+            float targetRatio = bw / bh;
             float srcRatio = iw / ih;
             if (srcRatio > targetRatio) {
                 // 图片更宽：裁左右，u 从中间取
                 float uHalf = (targetRatio / srcRatio) / 2f;
-                fdpRenderMediaQuad(vc, pose, 0, 0, w, h, z, 0.5f - uHalf, 0, 0.5f + uHalf, 1, light, overlay);
+                fdpRenderMediaQuad(vc, pose, 0, 0, bw, bh, z, 0.5f - uHalf, 0, 0.5f + uHalf, 1, light, overlay);
             } else {
                 // 图片更高：裁上下，v 从中间取
                 float vHalf = (srcRatio / targetRatio) / 2f;
-                fdpRenderMediaQuad(vc, pose, 0, 0, w, h, z, 0, 0.5f - vHalf, 1, 0.5f + vHalf, light, overlay);
+                fdpRenderMediaQuad(vc, pose, 0, 0, bw, bh, z, 0, 0.5f - vHalf, 1, 0.5f + vHalf, light, overlay);
             }
         } else {
             // FIT（默认）：保持宽高比完整显示，居中留边
             if (iw > 0 && ih > 0) {
-                float targetRatio = w / h;
+                float targetRatio = bw / bh;
                 float srcRatio = iw / ih;
                 if (srcRatio > targetRatio) {
                     // 以宽为基准，上下留边
-                    float drawH = w / srcRatio;
-                    float yOff = (h - drawH) / 2f;
-                    fdpRenderMediaQuad(vc, pose, 0, yOff, w, yOff + drawH, z, 0, 0, 1, 1, light, overlay);
+                    float drawH = bw / srcRatio;
+                    float yOff = (bh - drawH) / 2f;
+                    fdpRenderMediaQuad(vc, pose, 0, yOff, bw, yOff + drawH, z, 0, 0, 1, 1, light, overlay);
                 } else {
                     // 以高为基准，左右留边
-                    float drawW = h * srcRatio;
-                    float xOff = (w - drawW) / 2f;
-                    fdpRenderMediaQuad(vc, pose, xOff, 0, xOff + drawW, h, z, 0, 0, 1, 1, light, overlay);
+                    float drawW = bh * srcRatio;
+                    float xOff = (bw - drawW) / 2f;
+                    fdpRenderMediaQuad(vc, pose, xOff, 0, xOff + drawW, bh, z, 0, 0, 1, 1, light, overlay);
                 }
             } else {
-                fdpRenderMediaQuad(vc, pose, 0, 0, w, h, z, 0, 0, 1, 1, light, overlay);
+                fdpRenderMediaQuad(vc, pose, 0, 0, bw, bh, z, 0, 0, 1, 1, light, overlay);
             }
         }
 
@@ -190,8 +221,8 @@ public abstract class FlapDisplayRendererMixin {
 
         // 诊断：每 100 帧打印一次绘制参数（debug），便于定位几何问题（复用开头已 increment 的 n）
         if (n % 100 == 0) {
-            FlapDisplayPlus.LOGGER.debug("[RenderMedia] 绘制 flap={} w={} h={} lines={} xSize={} ySize={} mode={}",
-                    be.getBlockPos(), w, h, lines, be.xSize, be.ySize, mode);
+            FlapDisplayPlus.LOGGER.debug("[RenderMedia] 绘制 flap={} panel={}x{} 有效={}x{} inset={} off=({},{}) lines={} xSize={} ySize={} mode={}",
+                    be.getBlockPos(), w, h, bw, bh, cfgInset, cfgOffX, cfgOffY, lines, be.xSize, be.ySize, mode);
         }
     }
 

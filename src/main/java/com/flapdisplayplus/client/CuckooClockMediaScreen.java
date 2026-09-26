@@ -225,7 +225,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             return;
         }
         if (!MediaResolverManager.isNetworkInput(url)) {
-            status = "只支持 http(s) 开头的链接";
+            status = "只支持 http(s) 链接";
             return;
         }
         if (netItems.contains(url)) {
@@ -323,9 +323,21 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
                     b.setMessage(Component.literal("模式: " + modeLabel(displayMode)));
                 }));
 
+        // 【2026-09-27 修复】「清空」以前只把 GUI 里的 selectedPath 置空，**从不发包**，
+        // 所以服务端布谷鸟时钟上仍保留着原媒体 → 翻牌照旧显示媒体，用户反馈「点击清空后无效」。
+        // 而且「应用」当时还写了 `selectedPath.isEmpty() → 报错返回`，等于没有任何途径能清空。
+        // 现在：清空 = 立即发包把服务端媒体置空，并顺手停掉本地视频播放器（即时生效，不用等重登）。
         this.addRenderableWidget(FdpButton.create(cx - 71, row2, 50, 20,
                 Component.literal("清空"), b -> {
                     selectedPath = "";
+                    sourceType = CuckooClockMedia.SOURCE_IMAGE;
+                    setTabSelected(null);
+                    PacketDistributor.sendToServer(new SetMediaPacket(
+                            cuckooPos, "", displayMode, CuckooClockMedia.SOURCE_IMAGE));
+                    // 不做本地即时清除：registry 的 key 是「显示带 controller 坐标」而非时钟坐标，
+                    // 在这里按 cuckooPos 移除既可能打偏、又会误伤别的显示器。
+                    // 服务端清除包会在一个 tick 内到达并精确移除；客户端还有一处
+                    // 「方块已不存在就立即丢弃」的校验兜底（见 ClientWorldEvents.tick）。
                     status = "已清空（翻牌恢复原版显示）";
                 }));
 
@@ -400,14 +412,22 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
     }
 
     private void apply() {
-        if (CuckooClockMedia.SOURCE_IMAGE.equals(sourceType) && selectedPath.isEmpty()) {
-            status = "图片模式请先选择一张图片";
+        // 【2026-09-27 修复】以前这里是 `selectedPath.isEmpty() → 报错返回`，
+        // 导致「想清空媒体」根本发不出包（配合当时不发包的「清空」按钮 = 完全无法清除）。
+        // 现在空路径是合法输入，语义就是「清除该翻牌上的媒体叠加，恢复原版字符显示」。
+        boolean clearing = selectedPath == null || selectedPath.isEmpty();
+        PacketDistributor.sendToServer(new SetMediaPacket(cuckooPos, selectedPath, displayMode, sourceType));
+        if (clearing) {
+            status = "已应用：清除媒体（恢复原版显示）";
+            this.onClose();
             return;
         }
-        PacketDistributor.sendToServer(new SetMediaPacket(cuckooPos, selectedPath, displayMode, sourceType));
-        String pickedName = MediaResolverManager.isNetworkInput(selectedPath)
-                ? pickedNetName(selectedPath)
-                : new File(selectedPath).getName();
+        String pickedName;
+        if (MediaResolverManager.isNetworkInput(selectedPath)) {
+            pickedName = pickedNetName(selectedPath);
+        } else {
+            pickedName = new File(selectedPath).getName();
+        }
         status = "已应用：" + sourceTypeLabel(sourceType)
                 + (CuckooClockMedia.SOURCE_IMAGE.equals(sourceType) ? " " + pickedName : "");
         this.onClose();

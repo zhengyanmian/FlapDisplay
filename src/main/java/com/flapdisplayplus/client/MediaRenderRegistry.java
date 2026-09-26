@@ -30,8 +30,15 @@ public final class MediaRenderRegistry {
      * 过期机制只该用于「链接器被拆 / 玩家走远」这类**永久性**失效，因此放宽到 30 秒，
      * 并保证服务端有 1 秒级心跳（见 FlapDisplayMediaSource.HEARTBEAT_MS）作为主保障。
      * 真正的立即清除走 remove()（收到空路径的包），不依赖这个超时。
+     *
+     * 【2026-09-27 二次修正】30 秒又太长：用户反馈「拆掉方块后视频/图片还在显示」，
+     * 若拆的是【显示链接器】，就没有任何包会再发过来，只能等过期 —— 30 秒的残留太刺眼。
+     * 现降到 8 秒：服务端心跳是 1.5 秒，8 秒 = 容忍连续丢 5 个包，余量充足；
+     * 同时「拆链接器」最迟 8 秒自动恢复原版显示。
+     * 另外两条更快的路径：① 拆翻牌 → 客户端每刻核对方块存在性（MediaManager.tick）；
+     * ② 拆源/拆链接器 → 服务端 BreakEvent 主动发清空包（ServerBlockEvents）。
      */
-    private static final long EXPIRE_MS = 30000;
+    private static final long EXPIRE_MS = 8000;
 
     public static void put(BlockPos pos, String mediaPath, String displayMode) {
         if (pos == null || mediaPath == null || mediaPath.isEmpty()) {

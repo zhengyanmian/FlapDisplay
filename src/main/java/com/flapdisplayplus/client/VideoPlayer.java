@@ -11,7 +11,8 @@
  * - 无人观看自动暂停：3 秒无渲染访问 → 暂停解码与音频线；再次访问恢复。
  *
  * 注意：
- * - 纯 Java H.264 解码速度可能慢于实时，此时视频会自动降速播放（保持音画同步优先）。
+ * - 纯 Java H.264 解码速度可能慢于实时，此时视频会自动降速播放（宁可慢放也绝不冻结），
+ *   并周期性按音频时钟 seek 重同步，避免音画无限漂移。
  * - AAC 解码失败（JAAD 不支持的 profile）时自动退化为无声播放，不影响画面。
  */
 package com.flapdisplayplus.client;
@@ -50,7 +51,24 @@ public final class VideoPlayer {
     // 输出纹理长边上限 / 显示帧率上限 改为从 Config 读取（见 uploadFrame / videoLoop），
     // 方便在「卡顿 ↔ 清晰度」之间按需调整，无需改代码重编译。
     /** 切换走后，播放器暂停闲置超过此时长（ms）则由 tick 彻底停止并移除（防泄漏） */
-    private static final long IDLE_STOP_MS = 8000;
+    private static final long IDLE_STOP_MS = 60000;
+
+    /**
+     * 【2026-09-27 重写 —— 修「有声音但画面卡住不动」】
+     * 旧逻辑靠「落后 > 350ms 就 continue 丢帧，连续丢满 3000ms 才强制显示一帧」保同步，
+     * 但 seek 成功时会把丢帧计时器 dropRunStart 归零，而 seek 最快每 RESYNC_MIN_INTERVAL_MS
+     * (1200ms) 一次 —— 1200 < 3000，于是「强制显示」这道防冻结兜底【永远无法触发】。
+     * 结果：只要单帧解码耗时超过约 (1000/视频帧率 + 350)ms（例如本机那个 142MB 的 720p
+     * 长视频，纯 Java H.264 解码远慢于实时），每一帧都会走 continue 分支 → 画面永远停在
+     * 上一次显示的帧上不再刷新，而独立的音频线程照常播放 —— 正是用户报的
+     * 「有声音、有画面，但画面卡住不动」。
+     * 现在改为：显示节流用【墙钟】而不是 pts，落后时依然照常推进画面（宁可慢放也绝不冻结）；
+     * 只有落后到 RESYNC_HARD_LATE_MS 才做一次「按音频时钟 seek 重同步」，防止音画无限漂移。
+     */
+    private static final long RESYNC_HARD_LATE_MS = 2500;
+
+    /** 两次重同步 seek 之间的最小间隔，避免频繁 seek 把 IO 打满 */
+    private static final long RESYNC_MIN_INTERVAL_MS = 1200;
 
     private final String path;
     private final File file;
@@ -63,11 +81,30 @@ public final class VideoPlayer {
      */
     private final com.flapdisplayplus.net.StreamDownloader netDl;
 
-    /** 纹理（整段视频共用一张，像素原地刷新） */
+    // ===== 纹理三重缓冲 =====
+    // 【2026-09-27 重写 —— 卡顿主因】
+    // 旧实现：后台线程解码 → 把 int[] 丢回主线程 → **主线程** 逐像素 setPixelRGBA
+    //         （w×h 次，1024×576≈59 万次/帧）→ 主线程被压垮 → 整体掉帧。
+    // 现实现：逐像素填充改在**视频线程**完成（NativeImage 只是堆外内存，可安全多线程读写），
+    //         主线程每帧只做一次 texture.upload()。用 3 个缓冲轮转，保证「后台在写的那一块
+    //         永远不是主线程正在读的那一块」，因此无需加锁也不会撕裂。
+    private static final int NBUFS = 3;
+
+    /** 当前展示的纹理（渲染线程读） */
     private volatile ResourceLocation textureLoc;
-    private DynamicTexture texture;
-    private NativeImage nativeImage;
-    private final Object pixelLock = new Object();
+    private NativeImage[] imgs;
+    private DynamicTexture[] texs;
+    private ResourceLocation[] locs;
+    private int nbuf;
+    /** 当前展示的缓冲下标（-1 = 尚未初始化）。volatile：视频线程据此选下一块， 必须可见 */
+    private volatile int front = -1;
+    /** 后台已填好、等待渲染线程提升的缓冲下标（-1 = 无） */
+    private volatile int staged = -1;
+
+    /** 首帧载荷：纹理只能在渲染线程注册，故首帧由后台把数据交过来、渲染线程建缓冲 */
+    private volatile int[] initArgb;
+    private volatile int initW;
+    private volatile int initH;
 
     private volatile boolean stopped;
 
@@ -127,6 +164,7 @@ public final class VideoPlayer {
         if (paused) {
             resume();
         }
+        promoteStaged();
         return textureLoc;
     }
 
@@ -154,14 +192,39 @@ public final class VideoPlayer {
             barrierLock.notifyAll();
         }
         closeLine();
+        // 纹理必须在渲染线程释放（会 close 掉 NativeImage 并 delete GL 纹理）
         Minecraft.getInstance().execute(() -> {
-            if (textureLoc != null) {
-                try {
-                    Minecraft.getInstance().getTextureManager().release(textureLoc);
-                } catch (Throwable ignored) {
+            ResourceLocation[] ls = locs;
+            textureLoc = null;
+            if (ls != null) {
+                for (ResourceLocation l : ls) {
+                    if (l == null) {
+                        continue;
+                    }
+                    try {
+                        Minecraft.getInstance().getTextureManager().release(l);
+                    } catch (Throwable ignored) {
+                    }
                 }
-                textureLoc = null;
             }
+            // 兜底：万一有缓冲没被 release 覆盖到，直接关掉其 NativeImage
+            if (imgs != null) {
+                for (NativeImage im : imgs) {
+                    if (im != null) {
+                        try {
+                            im.close();
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            }
+            locs = null;
+            imgs = null;
+            texs = null;
+            nbuf = 0;
+            front = -1;
+            staged = -1;
+            initArgb = null;
         });
     }
 
@@ -208,8 +271,11 @@ public final class VideoPlayer {
                 }
                 Picture pic;
                 long frameIdx = 0;
-                long lastShownPts = -1;
                 long minGap = 1000L / Math.max(1, Config.MEDIA_VIDEO_FPS.get());
+                long lastResyncMs = 0;
+                // 上一帧「显示」的墙钟时刻（不是 pts！）。这是修「画面卡住不动」的关键：
+                // 即使解码慢到追不上音频时钟，也照样按 1000/fps 的间隔把画面推下去。
+                long lastShownWallMs = 0;
                 while (!stopped && (pic = grab.getNativeFrame()) != null) {
                     long ptsMs = (long) (frameIdx * frameDurMs);
                     frameIdx++;
@@ -217,11 +283,32 @@ public final class VideoPlayer {
                     if (stopped) {
                         break;
                     }
-                    // 源帧率高于 TARGET_FPS 时抽帧显示：跳过的帧不重绘（画面重复），
-                    // 但 pts 仍按音频时钟推进，时间轴保持对齐，CPU 随抽帧比例下降。
-                    if (ptsMs - lastShownPts >= minGap) {
+                    long nowMs = System.currentTimeMillis();
+                    long late = clockMs() - ptsMs;
+                    // ===== 音画同步保护：只有落后到「硬阈值」才 seek 重同步 =====
+                    // 注意这里【不再丢帧】：解码慢时宁可慢放，也绝不能让画面冻结。
+                    // 重同步本身仍按 RESYNC_MIN_INTERVAL_MS 限流，避免频繁 seek 打满 IO。
+                    if (late > RESYNC_HARD_LATE_MS && nowMs - lastResyncMs > RESYNC_MIN_INTERVAL_MS) {
+                        lastResyncMs = nowMs;
+                        double sec = Math.max(0.0, clockMs() / 1000.0);
+                        try {
+                            grab.seekToSecondPrecise(sec);
+                            // 手里这帧是 seek 之前的旧帧，丢弃；下一轮取靠近音频时钟的一帧
+                            frameIdx = (long) (sec * 1000.0 / Math.max(1e-6, frameDurMs));
+                            lastShownWallMs = 0;
+                            FlapDisplayPlus.LOGGER.debug(
+                                    "[VideoPlayer] 解码滞后 {}ms，已按音频时钟重同步到 {}s: {}", late, sec, path);
+                            continue;
+                        } catch (Throwable t) {
+                            // 流式通道/不支持的封装可能 seek 失败：忽略，继续按墙钟节流显示
+                            FlapDisplayPlus.LOGGER.debug("[VideoPlayer] 跳帧对齐失败(忽略): {}", t.toString());
+                        }
+                    }
+                    // 显示节流：按【墙钟】限流到 media.videoFps（源帧率更高时抽帧显示）。
+                    // 解码快 → 与 waitUntil 配合正常实时播放；解码慢 → 变成慢放而非冻结。
+                    if (nowMs - lastShownWallMs >= minGap) {
                         uploadFrame(pic);
-                        lastShownPts = ptsMs;
+                        lastShownWallMs = nowMs;
                     }
                 }
                 if (stopped) {
@@ -329,14 +416,15 @@ public final class VideoPlayer {
         return Math.max(0, System.currentTimeMillis() - wallEpochMs);
     }
 
-    // ============================ 帧上传（主线程） ============================
+    // ============================ 帧上传 ============================
+    // 分工：视频线程做「解码 + 降采样 + 逐像素填充」；渲染线程只做「upload + 换纹理」。
+    // 这样主线程每帧的固定开销从 O(w×h) 降到 O(1)。
 
     /**
-     * 解码并上传一帧：先按 Config 的纹理上限在【YUV 平面层】把 Picture 降采样到目标尺寸，
-     * 再 AWTUtil 转 BufferedImage。这样从不生成原生分辨率（如 1080p≈8MB）的 BufferedImage，
-     * 彻底消除之前每帧巨量内存分配导致的 GC 卡顿；YUV 逐平面盒式平均不影响配色
-     * （已用红/蓝渐变图离线验证：降采样后仍正确，无串色）。
-     * 最后主线程写入复用的 DynamicTexture 并 upload（LINEAR 过滤，避免拉伸块状模糊）。
+     * 解码并填充一帧到后台缓冲（**视频线程**执行）：
+     * 先按 Config 的纹理上限在【YUV 平面层】把 Picture 降采样到目标尺寸，
+     * 再 AWTUtil 转 BufferedImage，然后逐像素写进轮转缓冲。
+     * 从不生成原生分辨率（如 1080p≈8MB）的 BufferedImage，消除每帧巨量分配导致的 GC 卡顿。
      */
     private void uploadFrame(Picture pic) {
         int cap = Config.MEDIA_VIDEO_MAX_DIM.get();
@@ -367,47 +455,92 @@ public final class VideoPlayer {
         int bw = bi.getWidth();
         int bh = bi.getHeight();
         int[] argb = bi.getRGB(0, 0, bw, bh, null, 0, bw);
-        final int[] fsrc = argb;
-        final int fw = bw, fh = bh;
-        Minecraft.getInstance().execute(() -> writeTexture(fsrc, fw, fh));
-    }
 
-    /** 主线程：把 ARGB int[] 写入复用的纹理（配色 packing 与原 fillPixels 一致） */
-    private void writeTexture(int[] argb, int w, int h) {
-        if (stopped) {
+        // 尚未初始化：把首帧交给渲染线程去建纹理（纹理注册必须是渲染线程）
+        if (nbuf == 0) {
+            if (initArgb == null && staged < 0) {
+                initW = bw;
+                initH = bh;
+                initArgb = argb;
+            }
             return;
         }
-        try {
-            synchronized (pixelLock) {
-                if (nativeImage == null
-                        || nativeImage.getWidth() != w
-                        || nativeImage.getHeight() != h) {
-                    nativeImage = new NativeImage(w, h, false);
-                    texture = new DynamicTexture(nativeImage);
-                    ResourceLocation loc = Minecraft.getInstance().getTextureManager()
-                            .register("flapdisplayplus/video_" + id, texture);
-                    textureLoc = loc;
-                    // LINEAR 过滤：纹理被拉伸到翻牌显示面时平滑插值，消除块状模糊。
-                    // setFilter 内部 bind + texParameter，须在渲染线程（此处即主线程回调）。
-                    texture.setFilter(true, false);
-                    width = w;
-                    height = h;
-                    MediaManager.onVideoSize(path, width, height);
-                }
-                for (int y = 0; y < h; y++) {
-                    for (int x = 0; x < w; x++) {
-                        int c = argb[y * w + x];
-                        int a = (c >>> 24) & 0xFF;
-                        int r = (c >>> 16) & 0xFF;
-                        int g = (c >>> 8) & 0xFF;
-                        int b = c & 0xFF;
-                        nativeImage.setPixelRGBA(x, y, (a << 24) | (b << 16) | (g << 8) | r);
-                    }
-                }
-                texture.upload();
+        // 上一帧还没被渲染线程取走 → 直接丢这一帧。
+        // 这是「防音画越拖越远」的关键：宁可丢帧也不排队，排队会让画面永久滞后于声音。
+        if (staged >= 0) {
+            return;
+        }
+        // 轮转：后台要写的那一块永远不是渲染线程正在读的 front（3 缓冲保证）
+        int b = (front + 1) % NBUFS;
+        fillPixels(imgs[b], argb, bw, bh);
+        staged = b;
+    }
+
+    /** 渲染线程：把后台填好的缓冲提升为当前帧（只做 upload，不做逐像素） */
+    private void promoteStaged() {
+        // ① 首次：注册 NBUFS 套纹理并上传首帧
+        if (nbuf == 0) {
+            int[] a = initArgb;
+            if (a == null) {
+                return;
             }
+            initArgb = null;
+            int w = initW;
+            int h = initH;
+            imgs = new NativeImage[NBUFS];
+            texs = new DynamicTexture[NBUFS];
+            locs = new ResourceLocation[NBUFS];
+            for (int i = 0; i < NBUFS; i++) {
+                imgs[i] = new NativeImage(w, h, false);
+                texs[i] = new DynamicTexture(imgs[i]);
+                locs[i] = Minecraft.getInstance().getTextureManager()
+                        .register("flapdisplayplus/video_" + id + "_" + i, texs[i]);
+                // LINEAR 过滤：纹理被拉伸到翻牌显示面时平滑插值，消除块状模糊。
+                texs[i].setFilter(true, false);
+            }
+            fillPixels(imgs[0], a, w, h);
+            texs[0].upload();
+            nbuf = NBUFS;
+            front = 0;
+            textureLoc = locs[0];
+            width = w;
+            height = h;
+            MediaManager.onVideoSize(path, w, h);
+            return;
+        }
+        // ② 常规：提升后台填好的那一块
+        int s = staged;
+        if (s < 0) {
+            return;
+        }
+        staged = -1;
+        try {
+            texs[s].upload();
+            textureLoc = locs[s];
+            front = s;
         } catch (Throwable t) {
             FlapDisplayPlus.LOGGER.error("[VideoPlayer] 上传帧失败: {}", path, t);
+        }
+    }
+
+    /**
+     * 逐像素写入 NativeImage（视频线程执行）。
+     * NativeImage 本质是堆外内存，不涉及 GL 调用，因此可在任意线程读写；
+     * 前提是同一块缓冲不会有并发读（由 NBUFS 轮转保证）。
+     * 配色 packing 与 MediaManager 一致：setPixelRGBA 走 memPutInt(小端)，GL_RGBA 期望内存序 R,G,B,A，
+     * 故 int 必须为 (A<<24)|(B<<16)|(G<<8)|R。
+     */
+    private static void fillPixels(NativeImage img, int[] argb, int w, int h) {
+        for (int y = 0; y < h; y++) {
+            int row = y * w;
+            for (int x = 0; x < w; x++) {
+                int c = argb[row + x];
+                int a = (c >>> 24) & 0xFF;
+                int r = (c >>> 16) & 0xFF;
+                int g = (c >>> 8) & 0xFF;
+                int b = c & 0xFF;
+                img.setPixelRGBA(x, y, (a << 24) | (b << 16) | (g << 8) | r);
+            }
         }
     }
 

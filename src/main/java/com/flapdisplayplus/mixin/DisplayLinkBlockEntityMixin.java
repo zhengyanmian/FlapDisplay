@@ -42,8 +42,42 @@ public abstract class DisplayLinkBlockEntityMixin {
     @Unique
     private int flapdisplayplus$tickCounter = 0;
 
-    /** 推送间隔（tick）：20 tick = 1 秒，必须与 FlapDisplayMediaSource.getPassiveRefreshTicks 同量级 */
+    /**
+     * 本链接器最后一次真正推送过媒体的显示带坐标。
+     *
+     * 【2026-09-27 新增】用于「源或目标失效时主动清除」：
+     * 旧实现只在 provideLine 里清除，而 provideLine 可能根本不被调用
+     * （链接器被红石通电时 Create 的 tickSource 会提前 return；源被拆后我们的
+     * mixin 又直接 return）。结果客户端 MediaRenderRegistry 一直留着记录，
+     * 表现为「拆掉方块后视频/图片还在显示」。
+     */
+    @Unique
+    private BlockPos flapdisplayplus$pushedRenderPos;
+
     private static final int PUSH_INTERVAL_TICKS = 20;
+
+    /**
+     * 若之前推送过媒体，则发送一次「清空」包并忘记记录。
+     * 只在确实推过的时候发，避免每 tick 刷包。
+     */
+    @Unique
+    private void flapdisplayplus$clearIfPushed(DisplayLinkBlockEntity self, String why) {
+        BlockPos rp = this.flapdisplayplus$pushedRenderPos;
+        if (rp == null) {
+            return;
+        }
+        this.flapdisplayplus$pushedRenderPos = null;
+        try {
+            if (self.getLevel() instanceof ServerLevel serverLevel) {
+                PacketDistributor.sendToPlayersNear(serverLevel, null,
+                        rp.getX() + 0.5, rp.getY() + 0.5, rp.getZ() + 0.5, 64.0,
+                        new MediaDisplayPacket(rp, "", "FIT"));
+                FlapDisplayPlus.LOGGER.debug("[DisplayLink] {} 已清除媒体: {}", self.getBlockPos(), why);
+            }
+        } catch (Throwable t) {
+            FlapDisplayPlus.LOGGER.warn("[DisplayLink] {} 清除媒体失败: {}", self.getBlockPos(), why, t);
+        }
+    }
 
     @Inject(method = "tick", at = @At("HEAD"))
     private void flapdisplayplus$autoSelectAndPush(CallbackInfo ci) {
@@ -54,11 +88,15 @@ public abstract class DisplayLinkBlockEntityMixin {
         }
         BlockPos sourcePos = self.getSourcePosition();
         if (sourcePos == null) {
+            // 源坐标已为 null（布谷鸟时钟被拆后 Create 清空了绑定）：主动清除残留画面
+            flapdisplayplus$clearIfPushed(self, "源坐标为 null（源被拆）");
             return;
         }
         BlockEntity be = self.getLevel().getBlockEntity(sourcePos);
         if (!(be instanceof CuckooClockBlockEntity)) {
-            return; // 指向的不是布谷鸟时钟：保持默认行为
+            // 源不再是布谷鸟时钟（时钟被拆 / 改指向）：主动清除，避免画面残留
+            flapdisplayplus$clearIfPushed(self, "源不再是布谷鸟时钟");
+            return;
         }
 
         // 【2026-09-27 修正】计数器每个链接器独立、且每 tick 只推进一次。
@@ -70,24 +108,20 @@ public abstract class DisplayLinkBlockEntityMixin {
         // 用户确认：需要转速的是【翻牌显示器】（FlapDisplay 是 KineticBlockEntity，靠动力
         // 转动翻牌），不是链接器也不是时钟。翻牌不转（getSpeed()==0）→ 不显示媒体。
         BlockPos targetPos = self.getTargetPosition();
-        if (targetPos != null && self.getLevel().getBlockEntity(targetPos) instanceof FlapDisplayBlockEntity fbe) {
-            if (fbe.getSpeed() == 0) {
-                if (due) {
-                    try {
-                        if (self.getLevel() instanceof ServerLevel serverLevel) {
-                            // 解析 controller 坐标（与 FlapDisplayMediaSource 一致）
-                            FlapDisplayBlockEntity c = fbe.getController();
-                            BlockPos renderPos = (c != null ? c : fbe).getBlockPos();
-                            PacketDistributor.sendToPlayersNear(serverLevel, null,
-                                    renderPos.getX() + 0.5, renderPos.getY() + 0.5, renderPos.getZ() + 0.5, 64.0,
-                                    new MediaDisplayPacket(renderPos, "", "FIT"));
-                        }
-                    } catch (Throwable t) {
-                        FlapDisplayPlus.LOGGER.warn("[DisplayLink] 链接器 {} 清除媒体失败", self.getBlockPos(), t);
-                    }
-                }
-                return; // 翻牌不转：不设源、不推送
-            }
+        if (targetPos == null
+                || !(self.getLevel().getBlockEntity(targetPos) instanceof FlapDisplayBlockEntity fbe)) {
+            // 目标不是翻牌显示器（被拆 / 改指向）：主动清除，避免画面残留
+            flapdisplayplus$clearIfPushed(self, "目标不再是翻牌显示器");
+            return;
+        }
+        if (fbe.getSpeed() == 0) {
+            // 【2026-09-27 服务端优化】原实现是 `if (due) { 发清空包 }`：
+            // 只要翻牌一直不转，就会**每秒广播一个空包，永不停止** —— 白烧服务端 CPU 和带宽。
+            // 清空是「状态转换」而非「持续状态」：客户端收到空包即删除注册项，之后不会再复活，
+            // 所以只需在「从有媒体 → 变无转速」的那一次发一包。clearIfPushed 用
+            // pushedRenderPos 判重，天然只在转换时发一次。
+            flapdisplayplus$clearIfPushed(self, "翻牌无转速");
+            return; // 翻牌不转：不设源、不推送
         }
 
         // ===== 翻牌有转速：强制媒体显示源 + 推送 =====
@@ -96,6 +130,12 @@ public abstract class DisplayLinkBlockEntityMixin {
         if (self.activeSource != ModDisplaySources.FLAP_DISPLAY_MEDIA.get()) {
             self.activeSource = ModDisplaySources.FLAP_DISPLAY_MEDIA.get();
             FlapDisplayPlus.LOGGER.debug("[DisplayLink] 链接器 {} 已设为媒体显示源", self.getBlockPos());
+        }
+        // 记录推送目标，供「源/目标失效时清除」使用
+        try {
+            FlapDisplayBlockEntity c = fbe.getController();
+            this.flapdisplayplus$pushedRenderPos = (c != null ? c : fbe).getBlockPos();
+        } catch (Throwable ignored) {
         }
         // 兜底推送：官方被动刷新路径在 tickSource() 里还有一道「链接器被红石通电则 return」的
         // 门槛，通电时官方永远不会刷新。这里直接调 public 的 updateGatheredData() 绕过该门槛，
