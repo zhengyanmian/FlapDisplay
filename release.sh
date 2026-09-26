@@ -78,9 +78,17 @@ echo ""
 echo "[2/4] 检查工作区改动 ..."
 if [ -z "$(git status --porcelain)" ]; then
     echo "      工作区干净，无新改动需要提交。"
+
     if [ "$DO_PUSH" -eq 1 ]; then
-        echo "      仍然尝试推送（以防本地领先远程）..."
-        git push origin main 2>&1 | sed 's/^/      /'
+        # 本地是否领先远程？用一个占位提交来比对
+        LOCAL=$(git rev-parse HEAD)
+        REMOTE=$(git ls-remote origin main 2>/dev/null | awk '{print $1}')
+        if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "      本地与远程已同步（$LOCAL），无需推送。"
+        else
+            echo "      本地领先远程，正在推送 ..."
+            git push origin main 2>&1 | sed 's/^/      /'
+        fi
     fi
     echo ""
     echo "完成。"
