@@ -37,8 +37,11 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class FlapDisplayMediaSource extends SingleLineDisplaySource {
 
-    /** 链接器位置 → 最后一次推送时间戳（服务端，诊断用） */
-    public static final Map<BlockPos, Long> LAST_PUSH = new ConcurrentHashMap<>();
+    /**
+     * 链接器位置 → 最后一次实际发送的媒体状态（renderPos|mediaPath|mode）。
+     * 用于幂等去重：状态未变时不重发网络包（配置一变就会立刻发一次，所以行为无变化）。
+     */
+    private static final Map<BlockPos, String> LAST_SENT = new ConcurrentHashMap<>();
 
     @Override
     protected MutableComponent provideLine(DisplayLinkContext context, DisplayTargetStats stats) {
@@ -46,9 +49,6 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
         BlockPos sourcePos = gatherer.getSourcePosition();
         BlockPos flapPos = context.getTargetPos();
         BlockEntity be = context.level().getBlockEntity(sourcePos);
-
-        // 记录本次推送时间（链接器有转速/激活时 provideLine 才会被调用）
-        LAST_PUSH.put(gatherer.getBlockPos(), System.currentTimeMillis());
 
         // 服务端直接解析「实际渲染坐标」= 显示带 controller（左上角）。
         // Create 的 FlapDisplayRenderer 只渲染 controller 块，且 controller 渲染整个显示带。
@@ -82,20 +82,35 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
                 return provideTextLine(context, sourceType);
             }
 
-            FlapDisplayPlus.LOGGER.info("[MediaSource] 布谷鸟时钟 {} 媒体={} mode={} target={} render={}",
+            // 【性能约束】provideLine() 在服务端 tick 热路径上（每 getPassiveRefreshTicks 一次）。
+            // 这里的日志曾经是 info 且每次都打 → 每个媒体显示源每 5 秒刷一行。
+            // 改为 debug，并把「同一组配置只打一次」交给日志级别控制；需要排障时调 debug。
+            FlapDisplayPlus.LOGGER.debug("[MediaSource] 布谷鸟时钟 {} 媒体={} mode={} target={} render={}",
                     sourcePos, mediaPath.isEmpty() ? "(空)" : mediaPath, mode, flapPos, renderPos);
 
-            if (context.level() instanceof ServerLevel serverLevel) {
-                PacketDistributor.sendToPlayersNear(serverLevel, null,
-                        renderPos.getX() + 0.5, renderPos.getY() + 0.5, renderPos.getZ() + 0.5, 64.0,
-                        new MediaDisplayPacket(renderPos, mediaPath, mode));
+            // 幂等去重：媒体路径与目标都没变时，不必每 5 秒重发一次网络包。
+            // 之前无脑重发是为了「选图即同步」，但配置变化会立刻触发一次刷新，
+            // 所以只需在【值发生变化】时发送即可，行为不变而网络开销大幅下降。
+            String prev = LAST_SENT.get(gatherer.getBlockPos());
+            String now = renderPos.asLong() + "|" + mediaPath + "|" + mode;
+            if (!now.equals(prev)) {
+                LAST_SENT.put(gatherer.getBlockPos(), now);
+                if (context.level() instanceof ServerLevel serverLevel) {
+                    PacketDistributor.sendToPlayersNear(serverLevel, null,
+                            renderPos.getX() + 0.5, renderPos.getY() + 0.5, renderPos.getZ() + 0.5, 64.0,
+                            new MediaDisplayPacket(renderPos, mediaPath, mode));
+                }
             }
         } else {
-            // source 不是布谷鸟时钟：清空该翻牌的媒体叠加
-            if (context.level() instanceof ServerLevel serverLevel) {
-                PacketDistributor.sendToPlayersNear(serverLevel, null,
-                        renderPos.getX() + 0.5, renderPos.getY() + 0.5, renderPos.getZ() + 0.5, 64.0,
-                        new MediaDisplayPacket(renderPos, "", "FIT"));
+            // source 不是布谷鸟时钟：清空该翻牌的媒体叠加（同样只在状态变化时发一次）
+            String key = "clear:" + renderPos.asLong();
+            if (LAST_SENT.remove(gatherer.getBlockPos()) != null
+                    || LAST_SENT.putIfAbsent(gatherer.getBlockPos(), key) == null) {
+                if (context.level() instanceof ServerLevel serverLevel) {
+                    PacketDistributor.sendToPlayersNear(serverLevel, null,
+                            renderPos.getX() + 0.5, renderPos.getY() + 0.5, renderPos.getZ() + 0.5, 64.0,
+                            new MediaDisplayPacket(renderPos, "", "FIT"));
+                }
             }
         }
         return EMPTY_LINE;

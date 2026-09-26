@@ -45,26 +45,40 @@ public class LyricCache {
 
     /**
      * 从 songUrl 提取网易云歌曲 ID。
+     *
+     * 【性能约束】本方法在服务端 tick 热路径上被调用（每个显示源每 5 秒一次，
+     * 一首歌播放期间会被调用上万次）。因此：
+     *  - 命中成功路径**不打日志**（曾经每次都打 info，导致服务端控制台每秒刷 2 行）
+     *  - 失败路径的日志按 URL 去重，同一首歌只提示一次
+     * 详细诊断请临时把日志级别调到 debug。
+     *
      * @return 歌曲 ID，如果不是网易云歌曲返回 -1
      */
     public static long extractSongId(String songUrl) {
         if (songUrl == null || songUrl.isEmpty()) {
-            LOGGER.warn("[LyricCache] songUrl is null or empty");
             return -1;
         }
         Matcher matcher = SONG_ID_PATTERN.matcher(songUrl);
         if (matcher.find()) {
             try {
-                long id = Long.parseLong(matcher.group(1));
-                LOGGER.info("[LyricCache] Extracted song ID: {} from URL: {}", id, songUrl);
-                return id;
+                return Long.parseLong(matcher.group(1));
             } catch (NumberFormatException e) {
-                LOGGER.warn("[LyricCache] Failed to parse song ID from URL: {}", songUrl);
+                warnOnce(songUrl, "Failed to parse song ID from URL: " + songUrl);
                 return -1;
             }
         }
-        LOGGER.warn("[LyricCache] URL does not match NetEase pattern: {}", songUrl);
+        warnOnce(songUrl, "URL does not match NetEase pattern: " + songUrl);
         return -1;
+    }
+
+    /** 已警告过的 URL（避免热路径上重复打印同一条警告） */
+    private static final java.util.Set<String> WARNED_URLS = ConcurrentHashMap.newKeySet();
+
+    /** 同一 URL 只警告一次（上限 256 条，防止长期运行内存增长） */
+    private static void warnOnce(String url, String message) {
+        if (WARNED_URLS.size() < 256 && WARNED_URLS.add(url)) {
+            LOGGER.warn("[LyricCache] {}", message);
+        }
     }
 
     /**
@@ -103,7 +117,13 @@ public class LyricCache {
         return getOrFetch("netease:" + songId, () -> fetchNeteaseLyric(songId, songName));
     }
 
-    /** 通用缓存获取：首次异步拉取，失败结果不缓存（下次重试） */
+    /**
+     * 通用缓存获取：首次异步拉取，失败结果不缓存（下次重试）。
+     *
+     * 【性能约束】本方法同样在服务端 tick 热路径上。失败结果会被移除以便重试，
+     * 而每次失败都会记一条日志 —— 若歌曲确实没有歌词，就会变成「每 5 秒一条」的永久刷屏。
+     * 因此失败日志改为按 key 去重（每首歌只报一次，但仍保持重试行为不变）。
+     */
     private static LyricRecord getOrFetch(String key, java.util.function.Supplier<LyricRecord> fetcher) {
         CompletableFuture<LyricRecord> future = CACHE.computeIfAbsent(key, k ->
                 CompletableFuture.supplyAsync(fetcher)
@@ -113,72 +133,92 @@ public class LyricCache {
                 LyricRecord result = future.get();
                 if (result == null) {
                     CACHE.remove(key, future);
-                    LOGGER.warn("[LyricCache] Lyric fetch returned null, removed from cache for retry. Key: {}", key);
+                    warnOnce("fetch-null:" + key,
+                            "Lyric fetch returned null, will retry. Key: " + key);
                 }
                 return result;
             } catch (Exception e) {
                 CACHE.remove(key, future);
-                LOGGER.error("[LyricCache] Exception getting lyric result, removed from cache. Key: " + key, e);
+                // 异常对象保留完整堆栈（只报一次），便于定位真实故障
+                if (ERRORED_KEYS.add(key)) {
+                    LOGGER.error("[LyricCache] Exception getting lyric result, removed from cache. Key: " + key, e);
+                }
                 return null;
             }
         }
         return null;
     }
 
-    /** 拉取并解析网易云歌词（在异步线程中执行） */
+    /** 已报过异常的 key（异常含堆栈，代价高，单独去重） */
+    private static final java.util.Set<String> ERRORED_KEYS = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 拉取并解析网易云歌词（在异步线程中执行）。
+     *
+     * 【性能约束】本方法在「取不到歌词」时会被反复重试（见 getOrFetch），
+     * 因此**所有日志都走 warnOnce 按 key 去重**，否则一首无歌词的歌会永久刷屏。
+     */
     private static LyricRecord fetchNeteaseLyric(long songId, String songName) {
+        String key = "netease:" + songId;
         try {
             if (NetMusic.NET_EASE_WEB_API == null) {
-                LOGGER.error("[LyricCache] NET_EASE_WEB_API is null! NetMusic mod may not be fully initialized.");
+                warnOnce(key, "NET_EASE_WEB_API is null! NetMusic mod may not be fully initialized.");
                 return null;
             }
-            LOGGER.info("[LyricCache] Fetching NetEase lyric for song ID: {}, name: {}", songId, songName);
             String json = NetMusic.NET_EASE_WEB_API.lyric(songId);
             if (json == null || json.isEmpty()) {
-                LOGGER.warn("[LyricCache] API returned empty response for song ID: {}", songId);
+                warnOnce(key, "API returned empty response for song ID: " + songId);
                 return null;
             }
             LyricRecord record = LyricParser.parseLyric(json, songName);
             if (record == null) {
-                LOGGER.warn("[LyricCache] LyricParser returned null for song ID: {}", songId);
-            } else {
-                LOGGER.info("[LyricCache] Successfully parsed NetEase lyric for song ID: {}, lyric lines: {}",
-                        songId, record.getLyrics() != null ? record.getLyrics().size() : 0);
+                warnOnce(key, "LyricParser returned null for song ID: " + songId);
             }
             return record;
         } catch (Exception e) {
-            LOGGER.error("[LyricCache] Failed to fetch NetEase lyric for song ID: " + songId, e);
+            if (ERRORED_KEYS.add(key)) {
+                LOGGER.error("[LyricCache] Failed to fetch NetEase lyric for song ID: " + songId, e);
+            }
             return null;
         }
     }
 
-    /** 拉取并解析 QQ 音乐歌词（在异步线程中执行；QQ 接口返回明文 LRC，转成网易云格式喂 LyricParser） */
+    /**
+     * 拉取并解析 QQ 音乐歌词（在异步线程中执行；QQ 接口返回 base64 的 LRC，
+     * QQMusicApi.getLyric 已解码成明文，这里转成网易云格式喂 LyricParser）。
+     * 日志同样按 key 去重（理由见 fetchNeteaseLyric）。
+     *
+     * 翻译歌词：QQ 的 PlayLyricInfo 与主歌词同接口返回 trans 字段
+     * （2026-08-28 实测接口通；中文歌通常无翻译，故为空是正常情况而非故障）。
+     */
     private static LyricRecord fetchQQLyric(String songmid, String songName) {
+        String key = "qqmusic:" + songmid;
         try {
-            LOGGER.info("[LyricCache] Fetching QQ lyric for songmid: {}, name: {}", songmid, songName);
             String lrc = QQMusicApi.getLyric(songmid);
             if (lrc == null) {
-                LOGGER.warn("[LyricCache] QQ API returned empty lyric for songmid: {}", songmid);
+                warnOnce(key, "QQ API returned empty lyric for songmid: " + songmid);
                 return null;
             }
+            // 翻译歌词：拿不到不影响主歌词，静默降级
+            String transLrc = QQMusicApi.getTransLyric(songmid);
+
             JsonObject root = new JsonObject();
             root.addProperty("code", 200);
             JsonObject lrcObj = new JsonObject();
             lrcObj.addProperty("lyric", lrc);
             root.add("lrc", lrcObj);
             JsonObject tlyric = new JsonObject();
-            tlyric.addProperty("lyric", "");
+            tlyric.addProperty("lyric", transLrc == null ? "" : transLrc);
             root.add("tlyric", tlyric);
             LyricRecord record = LyricParser.parseLyric(root.toString(), songName);
             if (record == null) {
-                LOGGER.warn("[LyricCache] LyricParser returned null for QQ songmid: {}", songmid);
-            } else {
-                LOGGER.info("[LyricCache] Successfully parsed QQ lyric for songmid: {}, lyric lines: {}",
-                        songmid, record.getLyrics() != null ? record.getLyrics().size() : 0);
+                warnOnce(key, "LyricParser returned null for QQ songmid: " + songmid);
             }
             return record;
         } catch (Exception e) {
-            LOGGER.error("[LyricCache] Failed to fetch QQ lyric for songmid: " + songmid, e);
+            if (ERRORED_KEYS.add(key)) {
+                LOGGER.error("[LyricCache] Failed to fetch QQ lyric for songmid: " + songmid, e);
+            }
             return null;
         }
     }

@@ -2,12 +2,14 @@
  * FdpButton.java
  *
  * 翻牌万象自绘按钮：Create 木质风格（暗木底 + 描金边框），
- * 替换 Minecraft 默认按钮，与布谷鸟时钟媒体界面 / 配置界面风格统一。
+ * 替换 Minecraft 默认按钮，全模组界面统一风格。
  *
  * 视觉状态：
- * - 普通：暗木底 0xFF2F2216，边框 0xFF5C4430，文字 0xFFE8D5AB
- * - 悬停/聚焦：底色变亮 0xFF3D2B1F，边框金色 0xFFC9A86A，文字白色
- * - 禁用：更暗 0xFF1F1710，边框 0xFF3A2E20，文字灰色
+ * - 普通：暗木底 WOOD_CELL，边框 BORDER，文字 TEXT
+ * - 悬停/聚焦：底色变亮 WOOD_HOVER，边框金色 BORDER_HL，文字白色
+ * - 禁用：更暗 WOOD_DISABLED，边框 BORDER_DISABLED，文字灰色
+ *
+ * 配色常量统一由 FdpWidgets 提供（单一数据源），本类不再硬编码色值。
  */
 package com.flapdisplayplus.client;
 
@@ -39,25 +41,22 @@ public class FdpButton extends Button {
         int border;
         int textColor;
         if (!this.active) {
-            bg = 0xFF1F1710;
-            border = 0xFF3A2E20;
+            bg = FdpWidgets.WOOD_DISABLED;
+            border = FdpWidgets.BORDER_DISABLED;
             textColor = 0xFF777777;
         } else if (hovered) {
-            bg = 0xFF3D2B1F;
-            border = 0xFFC9A86A;
+            bg = FdpWidgets.WOOD_HOVER;
+            border = FdpWidgets.BORDER_HL;
             textColor = 0xFFFFFFFF;
         } else {
-            bg = 0xFF2F2216;
-            border = 0xFF5C4430;
-            textColor = 0xFFE8D5AB;
+            bg = FdpWidgets.WOOD_CELL;
+            border = FdpWidgets.BORDER;
+            textColor = FdpWidgets.TEXT;
         }
 
-        // 背景 + 边框
+        // 背景 + 边框（边框绘制统一走 FdpWidgets，保证与格子/面板一致）
         graphics.fill(x, y, x + w, y + h, bg);
-        graphics.hLine(x, x + w - 1, y, border);
-        graphics.hLine(x, x + w - 1, y + h - 1, border);
-        graphics.vLine(x, y, y + h - 1, border);
-        graphics.vLine(x + w - 1, y, y + h - 1, border);
+        FdpWidgets.outline(graphics, x, y, w, h, border);
 
         // 文字居中
         Component msg = getMessage();

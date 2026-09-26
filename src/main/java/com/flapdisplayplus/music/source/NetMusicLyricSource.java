@@ -32,6 +32,14 @@ import org.apache.logging.log4j.Logger;
  */
 public class NetMusicLyricSource extends SingleLineDisplaySource {
     private static final Logger LOGGER = LogManager.getLogger("NetMusicDisplay");
+    /**
+     * 首次诊断只打一次。
+     *
+     * 【性能约束】provideLine() 在服务端 tick 热路径上（每个显示源每 5 秒一次）。
+     * 这个标志位曾经只在「成功拿到 SongInfo」的分支里被置位，导致只要 CD 拿不到有效
+     * SongInfo，下面的诊断块就会**每次调用都打一遍 8 行日志** → 控制台刷屏。
+     * 现在改为：无论成功与否都置位（保证只打一次），且整块降为 debug 级别。
+     */
     private static volatile boolean firstCallLogged = false;
 
     @Override
@@ -47,25 +55,22 @@ public class NetMusicLyricSource extends SingleLineDisplaySource {
             }
 
             ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
-            if (info == null || info.songUrl == null || info.songName == null) {
-                if (!firstCallLogged) {
-                    LOGGER.warn("[LyricSource] SongInfo is null or incomplete. info={}, songUrl={}, songName={}",
-                            info, info != null ? info.songUrl : "null", info != null ? info.songName : "null");
-                }
-                return EMPTY_LINE;
-            }
-
-            // 首次调用时记录详细信息，帮助排查
+            // 诊断块：只打一次（无论成功失败），且用 debug 级别（默认不输出）
             if (!firstCallLogged) {
                 firstCallLogged = true;
-                LOGGER.info("[LyricSource] First call diagnostic:");
-                LOGGER.info("[LyricSource]   songName={}", info.songName);
-                LOGGER.info("[LyricSource]   songUrl={}", info.songUrl);
-                LOGGER.info("[LyricSource]   songTime={}s", info.songTime);
-                LOGGER.info("[LyricSource]   isPlay={}", musicPlayer.isPlay());
-                LOGGER.info("[LyricSource]   currentTime={}", musicPlayer.getCurrentTime());
-                LOGGER.info("[LyricSource]   level.isClientSide={}", context.level().isClientSide());
-                LOGGER.info("[LyricSource]   sourcePos={}", sourcePos);
+                if (info == null || info.songUrl == null || info.songName == null) {
+                    LOGGER.warn("[LyricSource] SongInfo 不完整，本首歌将不显示歌词。info={}, songUrl={}, songName={}",
+                            info, info != null ? info.songUrl : "null", info != null ? info.songName : "null");
+                } else {
+                    LOGGER.debug("[LyricSource] 首次调用诊断: songName={} songUrl={} songTime={}s isPlay={} "
+                                    + "currentTime={} isClientSide={} sourcePos={}",
+                            info.songName, info.songUrl, info.songTime, musicPlayer.isPlay(),
+                            musicPlayer.getCurrentTime(), context.level().isClientSide(), sourcePos);
+                }
+            }
+
+            if (info == null || info.songUrl == null || info.songName == null) {
+                return EMPTY_LINE;
             }
 
             // 按 URL 获取歌词（自动分发网易云 / QQ音乐 等平台）

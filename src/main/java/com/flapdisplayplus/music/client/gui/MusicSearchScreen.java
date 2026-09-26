@@ -1,5 +1,7 @@
 package com.flapdisplayplus.music.client.gui;
 
+import com.flapdisplayplus.client.FdpButton;
+import com.flapdisplayplus.client.FdpWidgets;
 import com.flapdisplayplus.music.config.Config;
 import com.flapdisplayplus.music.search.ActivePlatform;
 import com.flapdisplayplus.music.search.IMusicSearchSource;
@@ -83,18 +85,15 @@ public class MusicSearchScreen extends Screen implements SearchResultHost {
         this.searchBox.setMaxLength(64);
         this.addRenderableWidget(this.searchBox);
 
-        this.searchButton = Button.builder(Component.literal("搜索"), btn -> doSearch())
-                .bounds(boxX + boxW + 4, 36, 46, 20)
-                .build();
+        this.searchButton = FdpButton.create(boxX + boxW + 4, 36, 46, 20,
+                Component.literal("搜索"), btn -> doSearch());
         this.addRenderableWidget(this.searchButton);
 
         // 翻页按钮（仅翻页模式可见），放在状态栏上方
-        this.prevButton = Button.builder(Component.literal("上一页"), btn -> prevPage())
-                .bounds(this.width / 2 - 104, this.height - 22, 100, 18)
-                .build();
-        this.nextButton = Button.builder(Component.literal("下一页"), btn -> nextPage())
-                .bounds(this.width / 2 + 4, this.height - 22, 100, 18)
-                .build();
+        this.prevButton = FdpButton.create(this.width / 2 - 104, this.height - 22, 100, 18,
+                Component.literal("上一页"), btn -> prevPage());
+        this.nextButton = FdpButton.create(this.width / 2 + 4, this.height - 22, 100, 18,
+                Component.literal("下一页"), btn -> nextPage());
         this.addRenderableWidget(this.prevButton);
         this.addRenderableWidget(this.nextButton);
 
@@ -111,11 +110,8 @@ public class MusicSearchScreen extends Screen implements SearchResultHost {
             this.status = "请输入歌名或歌手";
             return;
         }
-        // QQ 音乐搜索功能开发中
-        if (this.currentSource instanceof QQMusicSearchSource) {
-            this.status = "QQ音乐搜索功能开发中，请切换至网易云";
-            return;
-        }
+        // QQ 音乐搜索已打通（2026-08-28）：走 musicu.fcg 的 DoSearchForQQMusicDesktop，
+        // 未登录即可返回完整结果。若某关键词无结果，QQ 侧返回 req.code=2001，属正常业务返回。
         this.searching = true;
         this.status = "搜索中...";
         clearResults();
@@ -183,9 +179,8 @@ public class MusicSearchScreen extends Screen implements SearchResultHost {
             String label = r.displayName() + "  (" + r.durationText() + ")";
             if (label.length() > 46) label = label.substring(0, 44) + "..";
             final SearchResult fr = r;
-            Button b = Button.builder(Component.literal(label), btn -> selectResult(fr))
-                    .bounds(btnX, y, btnW, 20)
-                    .build();
+            Button b = FdpButton.create(btnX, y, btnW, 20,
+                    Component.literal(label), btn -> selectResult(fr));
             this.addRenderableWidget(b);
             this.itemWidgets.add(new ItemWidget(b, fr));
             y += this.rowHeight;
@@ -247,7 +242,7 @@ public class MusicSearchScreen extends Screen implements SearchResultHost {
         this.renderBackground(graphics, mouseX, mouseY, partialTick);
         super.render(graphics, mouseX, mouseY, partialTick);
 
-        graphics.drawCenteredString(this.font, this.title, this.width / 2, 12, 0xFFFFFF);
+        FdpWidgets.title(graphics, this.title.getString(), this.width / 2, 12);
 
         // 翻页控件
         if (Config.SEARCH_LIST_MODE.get() == Config.SearchListMode.PAGINATE && !this.results.isEmpty()) {
@@ -255,14 +250,19 @@ public class MusicSearchScreen extends Screen implements SearchResultHost {
             int totalPages = Math.max(1, (this.results.size() + perPage - 1) / perPage);
             int cx = this.width / 2;
             String pageText = "第 " + (this.page + 1) + " / " + totalPages + " 页";
-            graphics.drawCenteredString(this.font, pageText, cx, this.resultAreaBottom + 6, 0xCCCCCC);
+            graphics.drawCenteredString(this.font, pageText, cx, this.resultAreaBottom + 6, FdpWidgets.TEXT_DIM);
         }
 
-        // 状态栏
+        // 状态栏（配色统一走 FdpWidgets）
         if (!this.status.isEmpty()) {
-            int color = this.status.startsWith("找到") || this.status.startsWith("已填入")
-                    ? 0x55FF55 : 0xFFAA00;
-            if (this.status.contains("失败") || this.status.contains("错误")) color = 0xFF5555;
+            int color = FdpWidgets.TEXT_DIM;
+            if (this.status.startsWith("找到") || this.status.startsWith("已填入")) {
+                color = FdpWidgets.TEXT_OK;
+            } else if (this.status.contains("失败") || this.status.contains("错误")) {
+                color = FdpWidgets.TEXT_ERROR;
+            } else if (!this.status.startsWith("搜索中")) {
+                color = FdpWidgets.TEXT_HL;
+            }
             int statusY = Config.SEARCH_LIST_MODE.get() == Config.SearchListMode.PAGINATE
                     ? this.height - 66 : this.height - 22;
             graphics.drawCenteredString(this.font, this.status, this.width / 2, statusY, color);
@@ -271,7 +271,7 @@ public class MusicSearchScreen extends Screen implements SearchResultHost {
         if (this.results.isEmpty() && !this.searching && this.status.isEmpty()) {
             graphics.drawCenteredString(this.font,
                     "输入歌名后回车搜索，点击结果填入刻录机",
-                    this.width / 2, this.height - 36, 0xAAAAAA);
+                    this.width / 2, this.height - 36, FdpWidgets.TEXT_DIM);
         }
     }
 

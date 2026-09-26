@@ -11,13 +11,16 @@
  * updateGatheredData」的死循环。设源后直接调用 public 的 updateGatheredData()（绕过
  * tickSource 的红石 POWERED 门槛），节流到每 20 tick 推送一次，实现「指向即显示、无需红石」。
  *
- * activeSource 字段通过 DisplayLinkReflection 安全反射读写（只用 getDeclaredField）。
+ * 【2026-08-28 重构】activeSource 先前通过 DisplayLinkReflection 反射读写，现已改为**直接字段访问**。
+ * javap 在 create-1.21.1-6.0.10-280-slim.jar 上验证：
+ *     public com.simibubi.create.api.behaviour.display.DisplaySource activeSource;
+ * 该字段是 public，反射层（compat/DisplayLinkReflection.java，80 行）完全多余，已删除。
+ * 教训：任何关于第三方 API 可见性的判断都必须在真实 jar 上 javap 验证，不要凭注释或记忆。
  */
 package com.flapdisplayplus.mixin;
 
 import com.flapdisplayplus.FlapDisplayPlus;
 import com.flapdisplayplus.ModDisplaySources;
-import com.flapdisplayplus.compat.DisplayLinkReflection;
 import com.flapdisplayplus.network.MediaDisplayPacket;
 import com.simibubi.create.content.kinetics.clock.CuckooClockBlockEntity;
 import com.simibubi.create.content.redstone.displayLink.DisplayLinkBlockEntity;
@@ -63,9 +66,8 @@ public abstract class DisplayLinkBlockEntityMixin {
                     try {
                         if (self.getLevel() instanceof ServerLevel serverLevel) {
                             // 解析 controller 坐标（与 FlapDisplayMediaSource 一致）
-                            BlockPos renderPos = targetPos;
                             FlapDisplayBlockEntity c = fbe.getController();
-                            renderPos = (c != null ? c : fbe).getBlockPos();
+                            BlockPos renderPos = (c != null ? c : fbe).getBlockPos();
                             PacketDistributor.sendToPlayersNear(serverLevel, null,
                                     renderPos.getX() + 0.5, renderPos.getY() + 0.5, renderPos.getZ() + 0.5, 64.0,
                                     new MediaDisplayPacket(renderPos, "", "FIT"));
@@ -80,9 +82,10 @@ public abstract class DisplayLinkBlockEntityMixin {
 
         // ===== 翻牌有转速：强制媒体显示源 + 推送 =====
         // 指向布谷鸟时钟的链接器 ⇒ 强制使用本模组媒体显示源（与注册实例一致）
-        if (DisplayLinkReflection.getActiveSource(self) != ModDisplaySources.FLAP_DISPLAY_MEDIA.get()) {
-            DisplayLinkReflection.setActiveSource(self, ModDisplaySources.FLAP_DISPLAY_MEDIA.get());
-            FlapDisplayPlus.LOGGER.info("[DisplayLink] 链接器 {} 已设为媒体显示源", self.getBlockPos());
+        // activeSource 是 public 字段，直接读写
+        if (self.activeSource != ModDisplaySources.FLAP_DISPLAY_MEDIA.get()) {
+            self.activeSource = ModDisplaySources.FLAP_DISPLAY_MEDIA.get();
+            FlapDisplayPlus.LOGGER.debug("[DisplayLink] 链接器 {} 已设为媒体显示源", self.getBlockPos());
         }
         // 节流：每 20 tick 主动推送一次（绕过 tickSource 的 POWERED 红石要求）
         if ((pushCounter++ % 20) == 0) {

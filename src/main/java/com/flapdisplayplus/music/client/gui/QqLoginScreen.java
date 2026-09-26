@@ -6,23 +6,27 @@
  * - 未登录：展示二维码并轮询扫码状态；可点击「刷新二维码」重新获取。
  * 登录态由 QqCredentialManager 持久化，重新进入本界面会读取并据此切换两种状态。
  * 借用 NetMusicCanNeedQQ 的登录服务（BSD-3-Clause，原作者 Yincmewy）。
+ *
+ * 【2026-08-28 重构】按钮换用 FdpButton，与主界面/配置界面统一木质风格；
+ * parent 为 null（由指令直接打开）时安全回退到关闭界面。
  */
 package com.flapdisplayplus.music.client.gui;
 
+import com.flapdisplayplus.client.FdpButton;
+import com.flapdisplayplus.client.FdpWidgets;
 import com.flapdisplayplus.music.qq.QqCredentialManager;
 import com.flapdisplayplus.music.qq.QqLoginService;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
 import java.util.concurrent.CompletableFuture;
 
 public class QqLoginScreen extends Screen {
-    private static final int COLOR_OK = 0x55FF55;
-    private static final int COLOR_ERR = 0xFF5555;
-    private static final int COLOR_NORMAL = 0xFFFFFF;
+    private static final int COLOR_OK = 0xFF8FBF6A;
+    private static final int COLOR_ERR = FdpWidgets.TEXT_ERROR;
+    private static final int COLOR_NORMAL = FdpWidgets.TEXT;
 
     private static final org.apache.logging.log4j.Logger LOGGER =
             org.apache.logging.log4j.LogManager.getLogger("NetMusicDisplay");
@@ -44,20 +48,20 @@ public class QqLoginScreen extends Screen {
     protected void init() {
         int cx = this.width / 2;
         // 返回按钮始终存在
-        this.addRenderableWidget(Button.builder(Component.literal("返回"), b -> this.onClose())
-                .bounds(cx - 50, this.height - 30, 100, 20).build());
+        this.addRenderableWidget(FdpButton.create(cx - 50, this.height - 30, 100, 20,
+                Component.literal("返回"), b -> this.onClose()));
 
         // 已登录：展示登录态 + 注销，不再展示二维码
         if (QqCredentialManager.hasValidCredential()) {
             loggedIn = true;
             statusText = "已登录（musicid=" + QqCredentialManager.getMusicId() + "）";
-            this.addRenderableWidget(Button.builder(Component.literal("注销并退出登录"), b -> doLogout())
-                    .bounds(cx - 90, this.height / 2 + 20, 180, 20).build());
+            this.addRenderableWidget(FdpButton.create(cx - 90, this.height / 2 + 20, 180, 20,
+                    Component.literal("注销并退出登录"), b -> doLogout()));
         } else {
             loggedIn = false;
             // 未登录：提供刷新二维码入口
-            this.addRenderableWidget(Button.builder(Component.literal("刷新二维码"), b -> startLogin())
-                    .bounds(cx - 60, this.height - 56, 120, 20).build());
+            this.addRenderableWidget(FdpButton.create(cx - 60, this.height - 56, 120, 20,
+                    Component.literal("刷新二维码"), b -> startLogin()));
             startLogin();
         }
     }
@@ -142,26 +146,28 @@ public class QqLoginScreen extends Screen {
         super.render(graphics, mouseX, mouseY, partialTick);
 
         int cx = this.width / 2;
-        graphics.drawCenteredString(this.font, this.title, cx, 20, 0xFFFFFF);
+        FdpWidgets.title(graphics, this.title.getString(), cx, 20);
 
         // 已登录：只画登录态面板
         if (loggedIn) {
             graphics.drawCenteredString(this.font, "QQ 音乐已登录", cx, this.height / 2 - 30, COLOR_OK);
-            graphics.drawCenteredString(this.font, statusText, cx, this.height / 2 - 8, 0xC8C8C8);
-            graphics.drawCenteredString(this.font, "点击「注销并退出登录」可清除登录状态", cx, this.height / 2 + 48, 0xAAAAAA);
+            graphics.drawCenteredString(this.font, statusText, cx, this.height / 2 - 8, 0xFFC8C8C8);
+            graphics.drawCenteredString(this.font, "点击「注销并退出登录」可清除登录状态",
+                    cx, this.height / 2 + 48, FdpWidgets.TEXT_DIM);
             return;
         }
 
-        // 未登录：画二维码
+        // 未登录：画二维码（浅色底框，保证二维码在深色背景上可扫）
         int qrSize = 200;
         int qrX = cx - qrSize / 2;
         int qrY = 50;
+        graphics.fill(qrX - 6, qrY - 6, qrX + qrSize + 6, qrY + qrSize + 6, 0xFFFFFFFF);
         if (qr.isLoaded()) {
             qr.render(graphics, qrX, qrY, qrSize);
         } else if (state == QqLoginService.LoginState.FAILED) {
             graphics.drawCenteredString(this.font, "二维码不可用", cx, qrY + qrSize / 2, COLOR_ERR);
         } else {
-            graphics.drawCenteredString(this.font, "加载二维码中...", cx, qrY + qrSize / 2, 0xAAAAAA);
+            graphics.drawCenteredString(this.font, "加载二维码中...", cx, qrY + qrSize / 2, FdpWidgets.TEXT_DIM);
         }
 
         int color = (state == QqLoginService.LoginState.SUCCESS) ? COLOR_OK
@@ -176,6 +182,7 @@ public class QqLoginScreen extends Screen {
         this.polling = false;
         this.qr.release();
         if (this.minecraft != null) {
+            // parent 可能为 null（由指令直接打开），此时关闭到游戏内
             this.minecraft.setScreen(this.parent);
         } else {
             super.onClose();

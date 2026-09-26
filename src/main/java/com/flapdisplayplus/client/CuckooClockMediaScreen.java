@@ -50,8 +50,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
     /** 网格展示用的统一条目：本地文件与网络链接混排，共用一套渲染/点击逻辑 */
     private final List<Entry> entries = new ArrayList<>();
     /** 链接输入框 */
-    private net.minecraft.client.gui.components.EditBox urlBox;
-    /** yt-dlp 可用性检测结果缓存（null=尚未检测） */
+    private net.minecraft.client.gui.components.EditBox urlBox;    /** yt-dlp 可用性检测结果缓存（null=尚未检测） */
     private Boolean ytdlpAvailable;
     private String selectedPath = "";
     private String displayMode = "FIT";   // 默认保持比例完整显示（不强制拉伸），可切换 STRETCH/COVER
@@ -72,10 +71,32 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             CuckooClockMedia.SOURCE_INFO_TPS
     };
     private static final String[] TYPE_LABELS = {"现实时间", "游戏时间", "天气", "TPS"};
-    private net.minecraft.client.gui.components.Button[] typeTabs;
+    private Button[] typeTabs;
 
     private static final int PANEL_W = 340;
     private static final int PANEL_H = 240;
+
+    /**
+     * 媒体网格的几何参数。
+     *
+     * 【2026-08-28 重构】此前网格的左上角、格子尺寸、列数在 renderWindow() 与 mouseClicked()
+     * 里**各自硬编码了一份**，且两处的 top 差了 20px（绘制用 guiTop+56，判定用 guiTop+76），
+     * 导致「点击的格子比看到的低一行」。现在唯一来源就是这个 record，绘制与命中判定都调它，
+     * 结构上不可能再漂移。
+     */
+    private record Grid(int left, int top, int cellW, int cellH, int cols, int gapX, int gapY) {
+        int x(int i) { return left + (i % cols) * (cellW + gapX); }
+        int y(int i) { return top + (i / cols) * (cellH + gapY); }
+
+        boolean hit(int i, double mx, double my) {
+            return mx >= x(i) && mx <= x(i) + cellW && my >= y(i) && my <= y(i) + cellH;
+        }
+    }
+
+    /** 网格几何的唯一定义处（缩略图区高 48 + 名称 2 行） */
+    private Grid grid() {
+        return new Grid(this.guiLeft + 10, this.guiTop + 56, 92, 70, 3, 6, 8);
+    }
 
     public CuckooClockMediaScreen(BlockPos cuckooPos) {
         super(Component.literal("翻牌万象 · 布谷鸟时钟媒体"));
@@ -255,24 +276,10 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         // ===== 顶部：内容类型选项卡（现实时间 / 游戏时间 / 天气 / TPS）=====
         // 图片模式为默认（无选项卡）；点击某选项卡切换，再点一次取消回图片。
         // 打开界面时全部灰色，当前类型在状态行显示。
-        typeTabs = new net.minecraft.client.gui.components.Button[TYPES.length];
+        typeTabs = new Button[TYPES.length];
         for (int i = 0; i < TYPES.length; i++) {
-            final String t = TYPES[i];
-            net.minecraft.client.gui.components.Button b = FdpButton.create(
-                    this.guiLeft + 10 + i * 66, top + 18, 64, 20,
-                    Component.literal("§7" + TYPE_LABELS[i]),
-                    btn -> {
-                        if (sourceType.equals(t)) {
-                            // 再点一次：取消，回到默认图片模式
-                            sourceType = CuckooClockMedia.SOURCE_IMAGE;
-                            setTabSelected(null);
-                            status = sourceTypeHint(CuckooClockMedia.SOURCE_IMAGE);
-                        } else {
-                            sourceType = t;
-                            setTabSelected(t);
-                            status = sourceTypeHint(t);
-                        }
-                    });
+            FdpButton b = makeTabButton(this.guiLeft + 10 + i * 66, top + 18, 64, 20,
+                    TYPES[i], TYPE_LABELS[i]);
             typeTabs[i] = b;
             this.addRenderableWidget(b);
         }
@@ -365,6 +372,22 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         }
     }
 
+    /** 选项卡按钮（自绘风格，与其它按钮统一） */
+    private FdpButton makeTabButton(int x, int y, int w, int h, String type, String label) {
+        return FdpButton.create(x, y, w, h, Component.literal("§7" + label), btn -> {
+            if (sourceType.equals(type)) {
+                // 再点一次：取消，回到默认图片模式
+                sourceType = CuckooClockMedia.SOURCE_IMAGE;
+                setTabSelected(null);
+                status = sourceTypeHint(CuckooClockMedia.SOURCE_IMAGE);
+            } else {
+                sourceType = type;
+                setTabSelected(type);
+                status = sourceTypeHint(type);
+            }
+        });
+    }
+
     /** 内容类型切换时的状态提示 */
     private String sourceTypeHint(String t) {
         return switch (t) {
@@ -422,25 +445,17 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         int left = this.guiLeft;
         int top = this.guiTop;
 
-        // 木质面板
-        graphics.fill(left - 4, top - 4, left + PANEL_W + 4, top + PANEL_H + 4, 0xFF2A1D13);
-        graphics.fill(left, top, left + PANEL_W, top + PANEL_H, 0xFF3D2B1F);
-        graphics.hLine(left, left + PANEL_W - 1, top, 0xFF5C4430);
-        graphics.hLine(left, left + PANEL_W - 1, top + PANEL_H, 0xFF5C4430);
-        graphics.vLine(left, top, top + PANEL_H, 0xFF5C4430);
-        graphics.vLine(left + PANEL_W, top, top + PANEL_H, 0xFF5C4430);
+        // 木质面板（配色与描边统一走 FdpWidgets，不再就地硬编码色值）
+        FdpWidgets.panel(graphics, left, top, PANEL_W, PANEL_H);
 
-        graphics.drawCenteredString(this.font, "翻牌万象 · 布谷鸟时钟媒体", left + PANEL_W / 2, top + 8, 0xFFE8D5AB);
+        FdpWidgets.centeredNote(graphics, "翻牌万象 · 布谷鸟时钟媒体",
+                left + PANEL_W / 2, top + 8, FdpWidgets.TEXT);
 
         // 选项卡占 top+18~38；状态提示居中显示在选项卡下方
-        graphics.drawCenteredString(this.font, status, left + PANEL_W / 2, top + 44, 0xFFC9A86A);
+        FdpWidgets.centeredNote(graphics, status, left + PANEL_W / 2, top + 44, FdpWidgets.TEXT_HL);
 
-        // 网格：3 列 × 2 行，每格 92x70（缩略图 + 文件名）
-        int gridLeft = left + 10;
-        int gridTop = top + 56;
-        int cellW = 92;
-        int cellH = 70;
-        int cols = 3;
+        // 网格：3 列 × 2 行（缩略图 + 文件名）；几何来自 grid()，与命中判定共用
+        Grid g = grid();
         int totalPages = Math.max(1, (entries.size() + perPage - 1) / perPage);
         if (page >= totalPages) page = totalPages - 1;
         int start = page * perPage;
@@ -449,17 +464,14 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             int idx = start + i;
             if (idx >= entries.size()) break;
             Entry e = entries.get(idx);
-            int col = i % cols;
-            int row = i / cols;
-            int x = gridLeft + col * (cellW + 6);
-            int y = gridTop + row * (cellH + 8);
+            int x = g.x(i);
+            int y = g.y(i);
+            int cellW = g.cellW();
+            int cellH = g.cellH();
             boolean selected = e.key().equals(selectedPath);
-            int borderColor = selected ? 0xFFC9A86A : 0xFF5C4430;
-            graphics.fill(x, y, x + cellW, y + cellH, 0xFF2F2216);
-            graphics.hLine(x, x + cellW, y, borderColor);
-            graphics.hLine(x, x + cellW, y + cellH, borderColor);
-            graphics.vLine(x, y, y + cellH, borderColor);
-            graphics.vLine(x + cellW, y, y + cellH, borderColor);
+            int borderColor = selected ? FdpWidgets.BORDER_HL : FdpWidgets.BORDER;
+            graphics.fill(x, y, x + cellW, y + cellH, FdpWidgets.WOOD_CELL);
+            FdpWidgets.outline(graphics, x, y, cellW, cellH, borderColor);
 
             // ===== 缩略图区（上部 48px）：静态图显示图片，GIF 显示当前动画帧 =====
             String path = e.key();
@@ -479,14 +491,15 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
                 if (s.length() > 13) {
                     s = s.substring(0, 12) + "…";
                 }
-                int c = (t != null && t.state == NetMediaManager.State.FAILED) ? 0xFFE06C6C : 0xFFB09A72;
+                int c = (t != null && t.state == NetMediaManager.State.FAILED)
+                        ? FdpWidgets.TEXT_ERROR : FdpWidgets.TEXT_DIM;
                 graphics.drawCenteredString(this.font, s, x + cellW / 2, y + 18, c);
             } else {
-                graphics.drawCenteredString(this.font, "…", x + cellW / 2, y + 18, 0xFFB09A72);
+                graphics.drawCenteredString(this.font, "…", x + cellW / 2, y + 18, FdpWidgets.TEXT_DIM);
             }
 
             // ===== 文件名（下部）：名称 + 类型/状态 =====
-            graphics.drawCenteredString(this.font, e.shortName(), x + cellW / 2, y + 52, 0xFFE8D5AB);
+            graphics.drawCenteredString(this.font, e.shortName(), x + cellW / 2, y + 52, FdpWidgets.TEXT);
             String sub;
             if (e.isNet()) {
                 NetMediaManager.Task t = NetMediaManager.get(e.url);
@@ -503,11 +516,11 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             } else {
                 sub = getExt(e.file).toUpperCase(Locale.ROOT);
             }
-            graphics.drawCenteredString(this.font, sub, x + cellW / 2, y + 60, 0xFFB09A72);
+            graphics.drawCenteredString(this.font, sub, x + cellW / 2, y + 60, FdpWidgets.TEXT_DIM);
         }
 
         graphics.drawCenteredString(this.font, "第 " + (page + 1) + " / " + totalPages + " 页",
-                left + PANEL_W / 2, top + PANEL_H - 14, 0xFFB09A72);
+                left + PANEL_W / 2, top + PANEL_H - 14, FdpWidgets.TEXT_DIM);
     }
 
     private String getExt(File f) {
@@ -519,20 +532,13 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (button == 0) {
-            int left = this.guiLeft + 10;
-            int top = this.guiTop + 76;
-            int cellW = 92;
-            int cellH = 70;
-            int cols = 3;
+            // 命中判定与绘制共用 grid()：几何只有一个来源，不会再出现「点到的和看到的错位」
+            Grid g = grid();
             int start = page * perPage;
             for (int i = 0; i < perPage; i++) {
                 int idx = start + i;
                 if (idx >= entries.size()) break;
-                int col = i % cols;
-                int row = i / cols;
-                int x = left + col * (cellW + 6);
-                int y = top + row * (cellH + 8);
-                if (mouseX >= x && mouseX <= x + cellW && mouseY >= y && mouseY <= y + cellH) {
+                if (g.hit(i, mouseX, mouseY)) {
                     Entry e = entries.get(idx);
                     selectedPath = e.key();
                     status = "已选择：" + e.name();

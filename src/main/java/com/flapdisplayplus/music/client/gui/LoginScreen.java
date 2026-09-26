@@ -1,5 +1,7 @@
 package com.flapdisplayplus.music.client.gui;
 
+import com.flapdisplayplus.client.FdpButton;
+import com.flapdisplayplus.client.FdpWidgets;
 import com.flapdisplayplus.music.MusicNetIntegration;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.flapdisplayplus.FlapDisplayPlus;
@@ -22,6 +24,8 @@ import java.util.concurrent.CompletableFuture;
  *
  * 布局：左边二维码（扫码登录），右边登录表单（邮箱/手机验证码切换）。
  * 二维码在游戏内直接渲染，无需切出游戏打开浏览器。
+ *
+ * 【2026-08-28 重构】按钮换用 FdpButton 统一木质风格；标题取 title 字符串而非硬编码。
  */
 public class LoginScreen extends Screen {
 
@@ -69,26 +73,26 @@ public class LoginScreen extends Screen {
         addRenderableWidget(passwordInput);
 
         // 发送验证码按钮（仅手机模式显示，放在验证码输入框右侧）
-        sendCaptchaButton = Button.builder(Component.literal("发送验证码"), btn -> sendCaptcha())
-                .bounds(formLeft + 90, formTop + 28, 80, 20).build();
+        sendCaptchaButton = FdpButton.create(formLeft + 90, formTop + 28, 80, 20,
+                Component.literal("发送验证码"), btn -> sendCaptcha());
         sendCaptchaButton.visible = false;
         addRenderableWidget(sendCaptchaButton);
 
         // 登录按钮
-        addRenderableWidget(Button.builder(Component.literal("登 录"), btn -> doLogin())
-                .bounds(formLeft, formTop + 56, 170, 20).build());
+        addRenderableWidget(FdpButton.create(formLeft, formTop + 56, 170, 20,
+                Component.literal("登 录"), btn -> doLogin()));
 
         // 切换登录方式
-        addRenderableWidget(Button.builder(Component.literal("切换手机/邮箱"), btn -> switchMode())
-                .bounds(formLeft, formTop + 84, 170, 20).build());
+        addRenderableWidget(FdpButton.create(formLeft, formTop + 84, 170, 20,
+                Component.literal("切换手机/邮箱"), btn -> switchMode()));
 
         // 刷新二维码
-        addRenderableWidget(Button.builder(Component.literal("刷新二维码"), btn -> refreshQR())
-                .bounds(qrLeft, qrTop + QR_SIZE + 10, QR_SIZE, 20).build());
+        addRenderableWidget(FdpButton.create(qrLeft, qrTop + QR_SIZE + 10, QR_SIZE, 20,
+                Component.literal("刷新二维码"), btn -> refreshQR()));
 
         // 关闭按钮
-        addRenderableWidget(Button.builder(Component.literal("关闭"), btn -> onClose())
-                .bounds(width / 2 - 50, formTop + 140, 100, 20).build());
+        addRenderableWidget(FdpButton.create(width / 2 - 50, formTop + 140, 100, 20,
+                Component.literal("关闭"), btn -> onClose()));
 
         refreshQR();
     }
@@ -104,21 +108,24 @@ public class LoginScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        this.renderBackground(graphics, mouseX, mouseY, partialTick);
         super.render(graphics, mouseX, mouseY, partialTick);
 
         // 标题
-        graphics.drawCenteredString(font, "网易云音乐登录", width / 2, formTop - 25, 0xFFFFFF);
+        FdpWidgets.title(graphics, "网易云音乐登录", width / 2, formTop - 25);
 
-        // 二维码
+        // 二维码（浅色底框保证在深色背景上可扫）
         if (qrLocation != null) {
+            graphics.fill(qrLeft - 4, qrTop - 4, qrLeft + QR_SIZE + 4, qrTop + QR_SIZE + 4, 0xFFFFFFFF);
             graphics.blit(qrLocation, qrLeft, qrTop, 0, 0, QR_SIZE, QR_SIZE, QR_SIZE, QR_SIZE);
         } else {
-            graphics.drawCenteredString(font, "二维码加载中...", qrLeft + QR_SIZE / 2, qrTop + QR_SIZE / 2, 0xAAAAAA);
+            graphics.drawCenteredString(font, "二维码加载中...",
+                    qrLeft + QR_SIZE / 2, qrTop + QR_SIZE / 2, FdpWidgets.TEXT_DIM);
         }
 
-        // 提示文字
+        // 提示文字（§ 颜色码样式在 tip 里已有；这里用统一主文字色）
         if (!tip.isEmpty()) {
-            graphics.drawString(font, tip, formLeft, formTop + 165, 0xFFFFFF);
+            graphics.drawString(font, tip, formLeft, formTop + 165, FdpWidgets.TEXT);
         }
     }
 

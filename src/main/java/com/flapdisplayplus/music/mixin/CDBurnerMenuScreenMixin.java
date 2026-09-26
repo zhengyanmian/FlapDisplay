@@ -116,10 +116,124 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
         }
 
         String mid = value.substring(QQMusicSearchSource.URL_PREFIX.length());
+        if (mid.isBlank()) {
+            this.tips = Component.literal("QQ 音乐 ID 为空");
+            return;
+        }
 
-        // QQ 音乐刻录功能开发中，暂不开放
-        this.tips = Component.literal("QQ音乐刻录功能开发中，请使用网易云音乐");
-        MusicNetIntegration.LOGGER.info("[刻录机] QQ 刻录入口已关闭（开发中），mid={}", mid);
+        // QQ 刻录已打通（2026-08-28）。流程：
+        //   1. 先用搜索结果缓存（QqSearchCache）拿到歌名/时长/mediaMid，避免额外网络请求；
+        //   2. 解析真实播放地址（vkey）必须在后台线程做——这是网络 IO，
+        //      绝不能阻塞渲染/UI 线程（历史版本曾设计成在 Render 线程同步请求，已废弃）；
+        //   3. 回主线程写 CD。
+        // 若解析失败，说明该歌曲需要 VIP 且未登录（或已下架），给出明确提示。
+        this.tips = Component.literal("正在解析 QQ 音乐...");
+        MusicNetIntegration.LOGGER.info("[刻录机] 开始 QQ 刻录，mid={}", mid);
+
+        final String songMid = mid;
+        final boolean readOnly = netmusicdisplay$isReadOnlyFlag();
+
+        java.util.concurrent.CompletableFuture
+                .supplyAsync(() -> netmusicdisplay$buildQqSongInfo(songMid, readOnly))
+                .whenComplete((info, ex) -> Minecraft.getInstance().execute(() -> {
+                    if (ex != null) {
+                        MusicNetIntegration.LOGGER.error("[刻录机] QQ 解析异常 mid=" + songMid, ex);
+                        this.tips = Component.literal("QQ 音乐解析失败：网络错误");
+                        return;
+                    }
+                    if (info == null) {
+                        // 未换到任何档位的播放地址：VIP 歌曲未登录，或歌曲已下架
+                        this.tips = Component.literal("QQ 音乐解析失败：需要登录 QQ 或歌曲不可用");
+                        return;
+                    }
+                    if (!NetMusicCompat.sendSongToServer(info)) {
+                        this.tips = Component.literal("写入唱片失败");
+                        return;
+                    }
+                    this.tips = Component.literal("已刻录：" + info.songName);
+                    MusicNetIntegration.LOGGER.info("[刻录机] QQ 刻录成功：{}", info.songName);
+                }));
+    }
+
+    /**
+     * 组装 QQ 音乐的完整歌曲信息（在后台线程执行）。
+     *
+     * 【关键设计】写入 CD 的 songUrl 是**伪协议** `qqmusic:{songmid}`，不是真实播放地址。
+     * 原因：
+     *   1. 真实播放地址带 vkey 且有时效性，写死进 CD 会导致唱片过一段时间就失效；
+     *   2. 模组已注册 QQMusicUrlResolver（IAsyncSongUrlResolver），播放时它会
+     *      实时把 qqmusic:{mid} 换成带 vkey 的真实地址；
+     *   3. 歌词侧 LyricCache 也只认 qqmusic:{songmid} 前缀来分发到 QQ 歌词接口。
+     * 所以这里**必须先验证该歌曲确实能换到播放地址**（否则做出一张播不了的唱片），
+     * 但验证完把真实地址丢掉，只写伪协议。
+     *
+     * 注意 songmid 与 media_mid 是两个不同的值：前者用于歌词/详情，
+     * 后者仅用于拼 vkey 的 filename，不要混淆。
+     */
+    private SongInfoData netmusicdisplay$buildQqSongInfo(String songMid, boolean readOnly) {
+        try {
+            com.flapdisplayplus.music.search.SearchResult cached = QqSearchCache.get(songMid);
+            String songName = cached != null ? cached.title() : null;
+            int duration = cached != null ? cached.durationSec() : 0;
+            String artist = cached != null ? cached.artist() : null;
+
+            // 缓存缺歌名或时长时，同步补查一次（已在后台线程，安全）
+            if (songName == null || songName.isBlank() || duration <= 0) {
+                QQMusicApi.QQSong detail = QQMusicApi.getSongDetail(songMid);
+                if (detail != null) {
+                    if (songName == null || songName.isBlank()) {
+                        songName = detail.title;
+                    }
+                    if (duration <= 0) {
+                        duration = detail.durationSec;
+                    }
+                    if ((artist == null || artist.isBlank()) && detail.artist != null) {
+                        artist = detail.artist;
+                    }
+                }
+            }
+
+            // 预检：确认这首歌当前能换到播放地址。换不到就不做唱片
+            // （典型原因：VIP 歌曲未登录、歌曲已下架）。
+            // 加超时防止后台线程被网络异常永久挂住（HttpUtil 自身 15s+15s）。
+            String probeUrl = QQMusicApi.getPlayUrl(songMid)
+                    .get(40, java.util.concurrent.TimeUnit.SECONDS);
+            if (probeUrl == null || probeUrl.isBlank()) {
+                MusicNetIntegration.LOGGER.info("[刻录机] QQ 歌曲无可用播放档位，拒绝刻录 mid={}", songMid);
+                return null;
+            }
+            if (songName == null || songName.isBlank() || duration <= 0) {
+                MusicNetIntegration.LOGGER.warn("[刻录机] QQ 歌曲元数据不完整 mid={} name={} duration={}",
+                        songMid, songName, duration);
+                return null;
+            }
+
+            SongInfoData data = new SongInfoData();
+            data.songUrl = QQMusicSearchSource.URL_PREFIX + songMid; // 伪协议，不是真实地址
+            data.songName = songName;
+            data.songTime = duration;
+            data.readOnly = readOnly;
+            if (artist != null && !artist.isBlank()) {
+                for (String a : artist.split("/")) {
+                    if (!a.isBlank()) {
+                        data.artists.add(a.trim());
+                    }
+                }
+            }
+            return data;
+        } catch (Exception e) {
+            MusicNetIntegration.LOGGER.error("[刻录机] 组装 QQ 歌曲信息失败 mid=" + songMid, e);
+            return null;
+        }
+    }
+
+    /** 读取「只读唱片」勾选框状态 */
+    private boolean netmusicdisplay$isReadOnlyFlag() {
+        try {
+            return this.readOnlyButton != null && this.readOnlyButton.selected();
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /**
