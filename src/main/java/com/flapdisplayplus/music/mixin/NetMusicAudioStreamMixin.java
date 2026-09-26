@@ -1,3 +1,48 @@
+/*
+ * NetMusicAudioStreamMixin.java
+ *
+ * 给 Net Music 的 NetMusicAudioStream 注入「按时间 seek」能力，用于暂停续播。
+ *
+ * ============================ 背景（全部经 javap 字节码验证） ============================
+ *
+ * NetMusicAudioStream 构造器的关键步骤：
+ *   AudioInputStream raw = AudioStreamHandlerManager.handle(url);       // mp3 原始流
+ *   AudioFormat pcmFmt   = getTargetPCMAudioFormat(raw.getFormat());    // 目标 PCM 格式
+ *   AudioInputStream mid = AudioSystem.getAudioInputStream(pcmFmt, raw);// 转码（javazoom）
+ *   this.stream = AudioSystem.getAudioInputStream(pcmFmtFinal, mid);    // 立体声重排
+ *   pumpBuffers(4);                                                     // 预读 4 个缓冲
+ *
+ * 所以 seek 必须作用在 **this.stream**（解码后的 PCM 流）上，且必须在 pumpBuffers(4) 之前，
+ * 否则前四个缓冲区已经是 0 位置的音频，表现为「先从头播再突然跳」。
+ *
+ * ---------------------------- 为什么不能信 stream.skip() ----------------------------
+ *
+ * 底层解码器是 javazoom 的 DecodedMpegAudioInputStream，其 skip 有两处致命问题：
+ *
+ * 1) 长度估算不可靠时直接返回 -1：
+ *      public long skip(long len) {
+ *          if (byteslength > 0 && frameslength > 0) { ... }
+ *          return -1L;            // ← 网络流/无 Xing 头的 mp3 经常走这里
+ *      }
+ *
+ * 2) 单位错配（最隐蔽、最危险）：
+ *      skip(len) 内部把 len 换算成「MPEG 帧数」→ 调 skipFrames()；
+ *      而 skipFrames() 返回的是它走过的 **MP3 压缩字节数**（累加 header.calculate_framesize()），
+ *      却被 skip() 原样当作「已跳过的 PCM 字节数」返回。
+ *      mp3 压缩比约 10:1 ⇒ 返回值比真实跳过的 PCM 字节小一个数量级，
+ *      调用方按返回值判断「还差多少」就会再补读一截 ⇒ seek 严重偏后。
+ *      这正是「续播不回到暂停点、往后跳一大截」的直接原因。
+ *
+ * ---------------------------- 因此本类的做法 ----------------------------
+ *
+ * 完全不用 stream.skip()，改为「按解码后 PCM 字节数精确 read-丢弃」。
+ * 换算基于 getFormat() 的真实 PCM 格式，不依赖 mp3 头部的估算：
+ *
+ *      目标字节 = 秒数 × 采样率 × 每帧字节数      （帧=样本×声道，frameSize 已含声道）
+ *
+ * 纯 javazoom 解码约 200 倍实时，跳 60 秒 ≈ 0.3 秒，可接受；
+ * 且为一次性开销（只在续播那一次 <init> 里做），不影响播放期性能。
+ */
 package com.flapdisplayplus.music.mixin;
 
 import com.github.tartaricacid.netmusic.client.audio.NetMusicAudioStream;
@@ -16,15 +61,6 @@ import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import java.net.URL;
 
-/**
- * 给 Net Music 的 NetMusicAudioStream 注入 seek 能力。
- *
- * NetMusicAudioStream 内部持有转码成 PCM 的 AudioInputStream（final stream 字段），
- * 音频数据由 loadAudioData() 懒加载（第一次 read 时才在异步线程读 stream）。
- *
- * 续播位置通过普通类 ResumeTracker.pendingSeekTick 传递：
- * NetMusicSound 构造时写入，本类构造完成后（首次 read 之前）消费并 seek。
- */
 @Mixin(NetMusicAudioStream.class)
 public abstract class NetMusicAudioStreamMixin {
 
@@ -35,11 +71,11 @@ public abstract class NetMusicAudioStreamMixin {
     private AudioInputStream stream;
 
     /**
-     * 在 pumpBuffers(4) 之前 seek：NetMusicAudioStream 构造器在 pumpBuffers(4) 里
-     * 就从 this.stream 的 0 位置同步读取并解码入队；若 seek 放到 <init> RETURN
-     * （pumpBuffers 之后），第一批缓冲区已是 0 位置音频，seek 后才跳到目标位置，
-     * 表现为「先从头播再突然跳到当前歌词位置」。
-     * 故必须在 pumpBuffers 之前、且 this.stream 已赋值之后执行 seek。
+     * 在 pumpBuffers(4) 之前 seek。
+     *
+     * 注入目标选在「构造器内第一次 INVOKE pumpBuffers」之前：
+     * 此时 this.stream 已赋值（第 128 字节码位置写入），流位置仍在 0，
+     * 尚未有任何音频进入 audioDataQueue —— 正是唯一的正确时机。
      */
     @Inject(method = "<init>", at = @At(value = "INVOKE",
             target = "Lcom/github/tartaricacid/netmusic/client/audio/NetMusicAudioStream;pumpBuffers(I)V",
@@ -56,48 +92,48 @@ public abstract class NetMusicAudioStreamMixin {
     }
 
     /**
-     * 把底层音频流 seek 到指定 tick。
-     * 先用 skip 快速跳（底层 DecodedMpegAudioInputStream 支持 skipFrames 快速跳帧），
-     * 若 skip 不足再用 read 精确补偿。
-     * 换算：字节数 = (tick / 20 秒) × 采样率 × 每帧字节数。
+     * 按 tick 精确 seek：换算成解码后 PCM 字节数，用 read-丢弃推进。
+     *
+     * 刻意不使用 stream.skip()，原因见文件头注释（单位错配 + 可能返回 -1）。
      */
     @Unique
     private void netmusicdisplay$seek(int tick) {
         try {
             AudioFormat format = this.stream.getFormat();
-            int frameSize = format.getFrameSize();
-            float frameRate = format.getFrameRate();
+            int frameSize = format.getFrameSize();       // 每帧字节（样本字节 × 声道）
+            float frameRate = format.getFrameRate();     // 每秒帧数（= 采样率）
             if (frameSize <= 0 || frameRate <= 0) {
+                LOGGER.warn("[NetMusicDisplay] seek 跳过：PCM 格式不可用 frameSize={} frameRate={}", frameSize, frameRate);
                 return;
             }
-            long targetBytes = (long) ((tick / 20.0) * frameRate * frameSize);
+
+            long targetBytes = (long) ((tick / 20.0) * frameRate) * frameSize;
+            // 对齐到整帧，避免在帧中间截断导致后续解码出现半个样本
+            targetBytes = (targetBytes / frameSize) * frameSize;
+
             long startTime = System.currentTimeMillis();
-
-            // 先 skip（可能快速跳帧）
-            long skipped = 0;
-            try {
-                skipped = this.stream.skip(targetBytes);
-            } catch (Exception ignored) {
-            }
-
-            // skip 不足则 read 补偿
-            long readCompensate = 0;
-            long remaining = targetBytes - skipped;
-            if (remaining > 0) {
-                byte[] buf = new byte[65536];
-                while (remaining > 0) {
-                    int n = this.stream.read(buf, 0, (int) Math.min(buf.length, remaining));
-                    if (n <= 0) {
-                        break;
-                    }
-                    remaining -= n;
-                    readCompensate += n;
+            long done = 0;
+            byte[] buf = new byte[65536];
+            while (done < targetBytes) {
+                int want = (int) Math.min(buf.length, targetBytes - done);
+                // 同样对齐到整帧，保证每次 read 都是完整帧
+                want = (want / frameSize) * frameSize;
+                if (want <= 0) {
+                    break;
                 }
+                int n = this.stream.read(buf, 0, want);
+                if (n <= 0) {
+                    // 流已到末尾（歌曲比预期短）：无法继续推进，接受当前位置
+                    LOGGER.warn("[NetMusicDisplay] seek 提前结束：读到流末尾 done={}/{} 字节", done, targetBytes);
+                    break;
+                }
+                done += n;
             }
 
             long elapsed = System.currentTimeMillis() - startTime;
-            LOGGER.info("[NetMusicDisplay] seek: tick={} targetPcm={} skip返回={} read补偿={} 耗时={}ms frameRate={} frameSize={}",
-                    tick, targetBytes, skipped, readCompensate, elapsed, frameRate, frameSize);
+            double actualSec = (double) done / frameSize / frameRate;
+            LOGGER.info("[NetMusicDisplay] seek 完成: 目标tick={} ({}秒) 实际跳过={}字节 ({}秒) 耗时={}ms frameRate={} frameSize={}",
+                    tick, tick / 20.0, done, String.format("%.3f", actualSec), elapsed, frameRate, frameSize);
         } catch (Exception e) {
             LOGGER.error("[NetMusicDisplay] seek 失败，退化为从头播放", e);
         }

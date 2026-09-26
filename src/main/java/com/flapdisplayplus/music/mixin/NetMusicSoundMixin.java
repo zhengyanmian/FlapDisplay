@@ -68,11 +68,16 @@ public abstract class NetMusicSoundMixin {
     @Inject(method = "<init>", at = @At("RETURN"))
     private void netmusicdisplay$initResume(BlockPos pos, URL url, int timeSecond, LyricRecord record, CallbackInfo ci) {
         int startTick = ResumeTracker.take(pos);
+        // this.tick 是「已过 tick」计数，原版从 0 起；续播时初值设为已播放位置，
+        // 使歌词行（lyricRecord.updateCurrentLine(tick)）也对齐到暂停点。
+        // tickTimes = timeSecond * 20 = 整首歌 tick 数（javap 验证），与原版 stop 判定同源。
         if (startTick > 0) {
             this.tick = startTick;
         }
-        // 无条件写入（含 0），既传递续播位置，也清掉上次可能残留的 seek 值
+        // 写入待 seek 位置供 NetMusicAudioStream 消费（含 0，清掉上次残留）
         ResumeTracker.pendingSeekTick = startTick;
+        LOGGER.info("[NetMusicDisplay] 创建声音 pos={} tickTimes={} startTick={} ({}秒)",
+                pos, this.tickTimes, startTick, startTick / 20.0);
     }
 
     /**

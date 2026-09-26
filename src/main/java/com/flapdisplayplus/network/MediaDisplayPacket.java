@@ -36,6 +36,10 @@ import java.util.Set;
 public record MediaDisplayPacket(BlockPos flapPos, String mediaPath, String displayMode)
         implements CustomPacketPayload {
 
+    /** 收包计数（仅用于热路径日志节流） */
+    private static final java.util.concurrent.atomic.AtomicLong PACKET_RX =
+            new java.util.concurrent.atomic.AtomicLong();
+
     public static final Type<MediaDisplayPacket> TYPE =
             new Type<>(ResourceLocation.fromNamespaceAndPath(FlapDisplayPlus.MODID, "media_display"));
 
@@ -55,12 +59,23 @@ public record MediaDisplayPacket(BlockPos flapPos, String mediaPath, String disp
     public static void handle(MediaDisplayPacket msg, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             BlockPos key = resolveRenderPos(msg.flapPos(), ctx);
-            FlapDisplayPlus.LOGGER.info("[MediaPacket] 客户端收到: renderKey={} media={} mode={}",
-                    key, msg.mediaPath().isEmpty() ? "(空)" : msg.mediaPath(), msg.displayMode());
-            if (msg.mediaPath() == null || msg.mediaPath().isEmpty()) {
+            // 【热路径日志铁律】本方法现在每秒都会被服务端心跳触发，绝不能打 info。
+            // 只在【状态真的变化】时打一条 info（选图/清除事件），其余降为 debug 并节流。
+            String incoming = msg.mediaPath() == null ? "" : msg.mediaPath();
+            MediaRenderRegistry.MediaInfo old = MediaRenderRegistry.peek(key);
+            boolean changed = old == null
+                    ? !incoming.isEmpty()
+                    : !incoming.equals(old.mediaPath) || !msg.displayMode().equals(old.displayMode);
+            if (changed) {
+                FlapDisplayPlus.LOGGER.info("[MediaPacket] 客户端收到: renderKey={} media={} mode={}",
+                        key, incoming.isEmpty() ? "(空)" : incoming, msg.displayMode());
+            } else if ((PACKET_RX.incrementAndGet() % 200) == 0) {
+                FlapDisplayPlus.LOGGER.debug("[MediaPacket] 心跳刷新 renderKey={} media={}", key, incoming);
+            }
+            if (incoming.isEmpty()) {
                 MediaRenderRegistry.remove(key);
             } else {
-                MediaRenderRegistry.put(key, msg.mediaPath(), msg.displayMode());
+                MediaRenderRegistry.put(key, incoming, msg.displayMode());
             }
         });
     }

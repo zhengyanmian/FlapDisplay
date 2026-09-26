@@ -61,6 +61,17 @@ public abstract class TileEntityMusicPlayerMixin {
      * 在 setPlayToClient() 开头判断本次是否为暂停续播。
      * 条件是：暂停续播开关开启、当前未播放、且剩余时间处于 (0, 总时长) 区间。
      * 若是续播，立即把起始位置发给客户端（SeekMessage 先于 MusicToClientMessage 到达）。
+     *
+     * 【2026-09-27 修正 total 的算法】
+     * 原版链路的真实基准（javap 验证 TileEntityMusicPlayer / NetMusicSound 字节码）：
+     *   lambda$setPlayToClient$0  → setCurrentTime(songTime * 20 + 64)   ← +64 是余量
+     *   每个 tick 都无条件 tickTime() 把 currentTime 减 1（到 0 停）
+     *   时间耗尽后 tick() 里再 setPlayToClient(songInfo) 触发重新播放
+     *   NetMusicSound.tickTimes  = timeSecond * 20                       ← 无 +64
+     *
+     * 所以「暂停瞬间正在播到第几秒」= (songTime*20 + 64) - currentTime，
+     * 不能再拿 total 当歌曲总长去算 seek —— 那会多算 64 tick（3.2 秒），
+     * 表现为续播位置偏后（+3.2 秒）且靠近结尾时干脆判成「没在播」而不续播。
      */
     @Inject(method = "setPlayToClient", at = @At("HEAD"))
     private void netmusicdisplay$detectResume(ItemMusicCD.SongInfo info, CallbackInfo ci) {
@@ -68,17 +79,19 @@ public abstract class TileEntityMusicPlayerMixin {
             netmusicdisplay$resuming = false;
             return;
         }
-        int total = info.songTime * 20 + 64;
+        int songTicks = info.songTime * 20;   // 歌曲真实长度（tick），与 NetMusicSound.tickTimes 同源
+        int total = songTicks + 64;           // 原版给 currentTime 的初始值（含 64 tick 余量）
         int current = getCurrentTime();
+        int played = total - current;         // 暂停时已经播放到的位置（tick）
         // 未在播放且处于歌曲中途 → 视为续播，拦截即将发生的重置
-        boolean resuming = !isPlay() && current > 0 && current < total;
+        boolean resuming = !isPlay() && current > 0 && current < total
+                && played > 0 && played < songTicks;
         netmusicdisplay$resuming = resuming;
-        LOGGER.info("[NetMusicDisplay] detectResume: isPlay={} current={} total={} resuming={}",
-                isPlay(), current, total, resuming);
+        LOGGER.info("[NetMusicDisplay] detectResume: isPlay={} current={} total={} playedTick={} ({}.{}秒) resuming={}",
+                isPlay(), current, total, played, played / 20, played % 20, resuming);
         if (resuming) {
-            int startTick = total - current;
-            LOGGER.info("[NetMusicDisplay] 续播：startTick={} ({}秒)", startTick, startTick / 20.0);
-            netmusicdisplay$sendSeek(startTick);
+            LOGGER.info("[NetMusicDisplay] 续播：startTick={} ({}秒)", played, played / 20.0);
+            netmusicdisplay$sendSeek(played);
         }
     }
 

@@ -30,6 +30,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.neoforged.neoforge.network.PacketDistributor;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -37,8 +38,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(DisplayLinkBlockEntity.class)
 public abstract class DisplayLinkBlockEntityMixin {
 
-    /** 全局推送节流计数器：每 20 tick（约 1 秒）全体链接器推送一次 */
-    private static int pushCounter = 0;
+    /** 每个链接器自己的节流计数（tick 数），避免多个链接器共用计数器互相干扰 */
+    @Unique
+    private int flapdisplayplus$tickCounter = 0;
+
+    /** 推送间隔（tick）：20 tick = 1 秒，必须与 FlapDisplayMediaSource.getPassiveRefreshTicks 同量级 */
+    private static final int PUSH_INTERVAL_TICKS = 20;
 
     @Inject(method = "tick", at = @At("HEAD"))
     private void flapdisplayplus$autoSelectAndPush(CallbackInfo ci) {
@@ -56,13 +61,18 @@ public abstract class DisplayLinkBlockEntityMixin {
             return; // 指向的不是布谷鸟时钟：保持默认行为
         }
 
+        // 【2026-09-27 修正】计数器每个链接器独立、且每 tick 只推进一次。
+        // 此前用一个 static pushCounter，并且在两个分支里各自增一次 ⇒ 多个链接器
+        // 互相拉扯相位，「每 20 tick 推送」实际会漂移成很久才推一次，媒体因此断流。
+        boolean due = (this.flapdisplayplus$tickCounter++ % PUSH_INTERVAL_TICKS) == 0;
+
         // ===== 翻牌显示器无转速 → 清除图片 =====
         // 用户确认：需要转速的是【翻牌显示器】（FlapDisplay 是 KineticBlockEntity，靠动力
         // 转动翻牌），不是链接器也不是时钟。翻牌不转（getSpeed()==0）→ 不显示媒体。
         BlockPos targetPos = self.getTargetPosition();
         if (targetPos != null && self.getLevel().getBlockEntity(targetPos) instanceof FlapDisplayBlockEntity fbe) {
             if (fbe.getSpeed() == 0) {
-                if ((pushCounter++ % 20) == 0) {
+                if (due) {
                     try {
                         if (self.getLevel() instanceof ServerLevel serverLevel) {
                             // 解析 controller 坐标（与 FlapDisplayMediaSource 一致）
@@ -87,8 +97,10 @@ public abstract class DisplayLinkBlockEntityMixin {
             self.activeSource = ModDisplaySources.FLAP_DISPLAY_MEDIA.get();
             FlapDisplayPlus.LOGGER.debug("[DisplayLink] 链接器 {} 已设为媒体显示源", self.getBlockPos());
         }
-        // 节流：每 20 tick 主动推送一次（绕过 tickSource 的 POWERED 红石要求）
-        if ((pushCounter++ % 20) == 0) {
+        // 兜底推送：官方被动刷新路径在 tickSource() 里还有一道「链接器被红石通电则 return」的
+        // 门槛，通电时官方永远不会刷新。这里直接调 public 的 updateGatheredData() 绕过该门槛，
+        // 保证「指向布谷鸟时钟就持续推送」，与是否通电无关。
+        if (due) {
             try {
                 self.updateGatheredData();
             } catch (Throwable t) {

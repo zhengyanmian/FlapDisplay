@@ -39,9 +39,24 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
 
     /**
      * 链接器位置 → 最后一次实际发送的媒体状态（renderPos|mediaPath|mode）。
-     * 用于幂等去重：状态未变时不重发网络包（配置一变就会立刻发一次，所以行为无变化）。
+     *
+     * 【2026-09-27 修正】这个「幂等去重」曾经是本模组最严重的隐性 bug：
+     * 它让「状态未变就不发包」，而客户端 MediaRenderRegistry 有一套 5 秒过期机制
+     * （认为服务端停发 = 链接器被拆了）。两者组合 ⇒ 画面稳定 5 秒后必然消失。
+     *
+     * 现在的策略：状态**变化时立即发**（保证「选图即同步」），状态**未变时低频心跳重发**
+     * （保证客户端不判过期）。心跳间隔见 HEARTBEAT_MS，必须显著小于客户端 EXPIRE_MS。
      */
     private static final Map<BlockPos, String> LAST_SENT = new ConcurrentHashMap<>();
+
+    /** 上次发送时间戳（毫秒），用于心跳重发 */
+    private static final Map<BlockPos, Long> LAST_SENT_AT = new ConcurrentHashMap<>();
+
+    /**
+     * 心跳重发间隔（毫秒）。必须 < MediaRenderRegistry.EXPIRE_MS（5000），
+     * 留足余量以吸收网络抖动与丢包；同时远大于一个 tick（50ms）避免无谓开销。
+     */
+    private static final long HEARTBEAT_MS = 1500L;
 
     @Override
     protected MutableComponent provideLine(DisplayLinkContext context, DisplayTargetStats stats) {
@@ -88,13 +103,18 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
             FlapDisplayPlus.LOGGER.debug("[MediaSource] 布谷鸟时钟 {} 媒体={} mode={} target={} render={}",
                     sourcePos, mediaPath.isEmpty() ? "(空)" : mediaPath, mode, flapPos, renderPos);
 
-            // 幂等去重：媒体路径与目标都没变时，不必每 5 秒重发一次网络包。
-            // 之前无脑重发是为了「选图即同步」，但配置变化会立刻触发一次刷新，
-            // 所以只需在【值发生变化】时发送即可，行为不变而网络开销大幅下降。
+            // 幂等去重 + 心跳：媒体路径与目标都没变时，不必每 tick 重发，但也**不能永久不发**。
+            // 客户端 MediaRenderRegistry 有 5 秒过期机制（停发 = 链接器被拆），
+            // 因此「状态变化立即发、状态未变每 HEARTBEAT_MS 补发一次」。
             String prev = LAST_SENT.get(gatherer.getBlockPos());
             String now = renderPos.asLong() + "|" + mediaPath + "|" + mode;
-            if (!now.equals(prev)) {
+            long nowMs = System.currentTimeMillis();
+            Long lastAt = LAST_SENT_AT.get(gatherer.getBlockPos());
+            boolean changed = !now.equals(prev);
+            boolean heartbeatDue = lastAt == null || nowMs - lastAt >= HEARTBEAT_MS;
+            if (changed || heartbeatDue) {
                 LAST_SENT.put(gatherer.getBlockPos(), now);
+                LAST_SENT_AT.put(gatherer.getBlockPos(), nowMs);
                 if (context.level() instanceof ServerLevel serverLevel) {
                     PacketDistributor.sendToPlayersNear(serverLevel, null,
                             renderPos.getX() + 0.5, renderPos.getY() + 0.5, renderPos.getZ() + 0.5, 64.0,
@@ -106,6 +126,7 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
             String key = "clear:" + renderPos.asLong();
             if (LAST_SENT.remove(gatherer.getBlockPos()) != null
                     || LAST_SENT.putIfAbsent(gatherer.getBlockPos(), key) == null) {
+                LAST_SENT_AT.remove(gatherer.getBlockPos());
                 if (context.level() instanceof ServerLevel serverLevel) {
                     PacketDistributor.sendToPlayersNear(serverLevel, null,
                             renderPos.getX() + 0.5, renderPos.getY() + 0.5, renderPos.getZ() + 0.5, 64.0,
@@ -152,13 +173,37 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
         return true;
     }
 
-    /** 防止 DisplayLinkBlockEntity.tick 周期性清空我们设好的 activeSource */
+    /**
+     * 【2026-09-27 关键修正 —— 返回 false 会让整个媒体显示源彻底失效】
+     *
+     * Create 6.0.10 `DisplayLinkBlockEntity.tick()` 实际字节码（javap 逐条核对）：
+     * <pre>
+     *   if (isVirtual()) return;
+     *   if (activeSource == null) return;
+     *   if (level.isClientSide) return;
+     *   refreshTicks++;
+     *   if (refreshTicks < activeSource.getPassiveRefreshTicks()) return;   // 未到期
+     *   if (!activeSource.shouldPassiveReset()) return;                     // ← 返回 false 直接 return
+     *   tickSource();                                                       // ← 只有 true 才真的取数据
+     * </pre>
+     *
+     * 也就是说：**返回 true 才会调用 tickSource()**，provideLine() 才会被执行。
+     * 返回 false = Create 永远不去刷新这个源 = 本类的主逻辑（含发包）成为死代码。
+     *
+     * 此前这里返回 false，注释还写着「必须返回 false 防止被重置」——正好写反了：
+     * 后果是刷新包从未发出，客户端 5 秒过期后媒体消失（图片/视频几秒后不见的根因）。
+     * 方法名里的 "Reset" 指的是「重置/重建显示内容」，对我们是**想要**的行为。
+     */
     @Override
     public boolean shouldPassiveReset() {
-        return false;
+        return true;
     }
 
-    /** 被动刷新间隔（tick）：20 = 约 1 秒一次，足够推送媒体配置 */
+    /**
+     * 被动刷新间隔（tick）：20 = 约 1 秒一次。
+     * 这是 provideLine() 的实际调用频率，决定了心跳包的上游节奏，
+     * 必须显著小于客户端 EXPIRE_MS，否则到期与刷新之间会出现可见的空档。
+     */
     @Override
     public int getPassiveRefreshTicks() {
         return 20;

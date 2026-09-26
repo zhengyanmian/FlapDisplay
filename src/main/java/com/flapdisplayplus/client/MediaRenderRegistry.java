@@ -21,8 +21,17 @@ public final class MediaRenderRegistry {
     private static final Map<BlockPos, MediaInfo> INFO = new ConcurrentHashMap<>();
     /** 翻牌坐标 → 最后更新时间戳（用于清理失效配置） */
     private static final Map<BlockPos, Long> TIMESTAMPS = new ConcurrentHashMap<>();
-    /** 配置过期时间（毫秒）：显示链接器持续发 MediaDisplayPacket 刷新，停发即认为已移除 */
-    private static final long EXPIRE_MS = 5000;
+
+    /**
+     * 配置过期时间（毫秒）：服务端持续发 MediaDisplayPacket 刷新，停发即认为已移除。
+     *
+     * 【2026-09-27 修正】原值 5000 与服务端的刷新节奏贴得太近，一旦服务端因任何原因
+     * 少发一两个包（幂等去重、丢包、区块卸载），画面就会当着玩家的面消失几秒再回来。
+     * 过期机制只该用于「链接器被拆 / 玩家走远」这类**永久性**失效，因此放宽到 30 秒，
+     * 并保证服务端有 1 秒级心跳（见 FlapDisplayMediaSource.HEARTBEAT_MS）作为主保障。
+     * 真正的立即清除走 remove()（收到空路径的包），不依赖这个超时。
+     */
+    private static final long EXPIRE_MS = 30000;
 
     public static void put(BlockPos pos, String mediaPath, String displayMode) {
         if (pos == null || mediaPath == null || mediaPath.isEmpty()) {
@@ -47,6 +56,16 @@ public final class MediaRenderRegistry {
             return null;
         }
         return INFO.get(pos);
+    }
+
+    /**
+     * 读取当前已登记的配置，**不触发**过期判定。
+     *
+     * 供收包侧做「状态是否真的变化」判断用：get() 带过期语义，在同一 tick 内
+     * 刚写入就被判定过期属于误伤，这里只做纯读。
+     */
+    public static MediaInfo peek(BlockPos pos) {
+        return pos == null ? null : INFO.get(pos);
     }
 
     /** 当前注册表条目数（诊断用） */
