@@ -115,19 +115,62 @@ echo.
 
 REM ===== 4. 推送 =====
 if "%DO_PUSH%"=="1" (
-    echo [4/4] 推送到 GitHub ...
-    git push origin main
+    echo [4/4] 推送到 GitHub ^(SSH^) ...
+
+    REM 确保远程走 SSH（HTTPS 在本机经代理会 502）
+    git remote get-url origin | findstr /b /c:"https://" >nul
+    if not errorlevel 1 (
+        echo       远程是 HTTPS，切换为 SSH ...
+        git remote set-url origin git@github.com:zhengyanmian/FlapDisplay.git
+    )
+
+    REM 检测 SSH 认证
+    ssh -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1 | findstr /c:"successfully authenticated" >nul
     if errorlevel 1 (
         echo.
-        echo [错误] 推送失败 ^(网络或凭据问题^)。代码已在本地提交，可稍后手动推送。
+        echo       [!] SSH 认证未通过 —— 公钥可能还没添加到 GitHub。
+        echo.
+        echo       请完成一次 ^(只需一次^):
+        echo         1. 打开 https://github.com/settings/keys
+        echo         2. 点 "New SSH key"，Title 随意
+        echo         3. Key 粘贴下面这一整行:
+        echo.
+        type "%USERPROFILE%\.ssh\id_ed25519.pub"
+        echo.
+        echo       保存后重新运行本脚本即可。
         pause
         exit /b 1
     )
+
+    REM 推送（失败重试 3 次）
+    set "PUSHED=0"
+    for /L %%i in (1,1,3) do (
+        if not "%PUSHED%"=="1" (
+            echo       --- 第 %%i 次尝试 ---
+            git push origin main
+            if not errorlevel 1 set "PUSHED=1"
+            if not "%PUSHED%"=="1" (
+                echo       失败，5 秒后重试...
+                timeout /t 5 /nobreak >nul
+            )
+        )
+    )
+
     echo.
-    echo ==============================================
-    echo  完成！
-    echo  仓库: https://github.com/zhengyanmian/FlapDisplay
-    echo ==============================================
+    if "%PUSHED%"=="1" (
+        echo ==============================================
+        echo  完成！代码已同步到 GitHub。
+        echo  仓库: https://github.com/zhengyanmian/FlapDisplay
+        echo ==============================================
+    ) else (
+        echo ==============================================
+        echo  [!] 推送未成功。代码已在本地提交，未丢失。
+        echo      稍后重试: git push origin main
+        echo      或双击运行: push-now.bat
+        echo ==============================================
+        pause
+        exit /b 1
+    )
 ) else (
     echo [4/4] 跳过推送 ^(--no-push^)
     echo.

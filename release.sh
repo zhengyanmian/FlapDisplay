@@ -12,6 +12,11 @@
 #   ./release.sh --no-build      # 跳过构建，只提交推送代码
 #   ./release.sh --no-push       # 只构建+提交，不推送
 #
+# 注意（本机环境）：
+#   本机 HTTPS 访问 GitHub 需经代理，而代理对 git 的 CONNECT 隧道返回 502；
+#   SSH（github.com:22 与 ssh.github.com:443）则完全通畅。
+#   因此远程地址使用 SSH：git@github.com:zhengyanmian/FlapDisplay.git
+#   若 SSH 认证失败，先运行 push-now.bat 查看公钥添加指引。
 # ============================================================================
 set -euo pipefail
 
@@ -101,13 +106,62 @@ echo ""
 
 # ===== 4. 推送 =====
 if [ "$DO_PUSH" -eq 1 ]; then
-    echo "[4/4] 推送到 GitHub ..."
-    git push origin main 2>&1 | sed 's/^/      /'
+    echo "[4/4] 推送到 GitHub (SSH) ..."
+
+    # 确保远程走 SSH（HTTPS 在本机经代理会 502）
+    CURRENT_URL=$(git remote get-url origin 2>/dev/null || echo "")
+    if [[ "$CURRENT_URL" == https://* ]]; then
+        echo "      远程是 HTTPS，切换为 SSH（本机 HTTPS 走代理会 502）..."
+        git remote set-url origin git@github.com:zhengyanmian/FlapDisplay.git
+    fi
+
+    # 检测 SSH 认证
+    if ! ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -T git@github.com 2>&1 \
+            | grep -q "successfully authenticated"; then
+        echo ""
+        echo "      [!] SSH 认证未通过 —— 公钥可能还没添加到 GitHub。"
+        echo ""
+        echo "      请完成一次（只需一次）:"
+        echo "        1. 打开 https://github.com/settings/keys"
+        echo "        2. 点 'New SSH key'，Title 随意"
+        echo "        3. Key 粘贴下面这一整行:"
+        echo ""
+        cat ~/.ssh/id_ed25519.pub 2>/dev/null | sed 's/^/           /'
+        echo ""
+        echo "      保存后重新运行本脚本即可。"
+        exit 1
+    fi
+
+    # 推送（失败重试 3 次，SSH 偶发抖动）
+    PUSHED=0
+    for i in 1 2 3; do
+        if git push origin main 2>&1 | sed 's/^/      /'; then
+            # git push 成功时若已是最新也会返回 0，用远程 SHA 复核
+            LOCAL=$(git rev-parse HEAD)
+            REMOTE=$(git ls-remote origin main 2>/dev/null | awk '{print $1}')
+            if [ "$LOCAL" = "$REMOTE" ]; then
+                PUSHED=1
+                break
+            fi
+        fi
+        echo "      第 $i 次未成功，5 秒后重试..."
+        sleep 5
+    done
+
     echo ""
-    echo "=============================================="
-    echo " 完成！"
-    echo " 仓库: https://github.com/zhengyanmian/FlapDisplay"
-    echo "=============================================="
+    if [ "$PUSHED" -eq 1 ]; then
+        echo "=============================================="
+        echo " 完成！代码已同步到 GitHub。"
+        echo " 仓库: https://github.com/zhengyanmian/FlapDisplay"
+        echo "=============================================="
+    else
+        echo "=============================================="
+        echo " [!] 推送未成功。代码已在本地提交，未丢失。"
+        echo "     稍后重试: git push origin main"
+        echo "     或双击运行: push-now.bat"
+        echo "=============================================="
+        exit 1
+    fi
 else
     echo "[4/4] 跳过推送 (--no-push)"
     echo ""
