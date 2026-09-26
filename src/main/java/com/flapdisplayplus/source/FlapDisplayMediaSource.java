@@ -53,10 +53,21 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
     private static final Map<BlockPos, Long> LAST_SENT_AT = new ConcurrentHashMap<>();
 
     /**
-     * 心跳重发间隔（毫秒）。必须 < MediaRenderRegistry.EXPIRE_MS（5000），
-     * 留足余量以吸收网络抖动与丢包；同时远大于一个 tick（50ms）避免无谓开销。
+     * 心跳重发间隔（毫秒）。必须显著小于客户端的过期时间
+     * （MediaRenderRegistry.EXPIRE_MS = 30000），留足余量以吸收网络抖动与丢包；
+     * 同时远大于一个 tick（50ms）避免无谓开销。
      */
     private static final long HEARTBEAT_MS = 1500L;
+
+    /** 清理节流：每 N 次发送做一次孤儿条目清理 */
+    private static final long CLEANUP_INTERVAL = 512L;
+
+    /** 清理计数器 */
+    private static final java.util.concurrent.atomic.AtomicLong CLEANUP_COUNTER =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** 超过此时长（毫秒）未再被访问的发送记录视为孤儿 */
+    private static final long STALE_MS = 10 * 60 * 1000L;
 
     @Override
     protected MutableComponent provideLine(DisplayLinkContext context, DisplayTargetStats stats) {
@@ -104,7 +115,7 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
                     sourcePos, mediaPath.isEmpty() ? "(空)" : mediaPath, mode, flapPos, renderPos);
 
             // 幂等去重 + 心跳：媒体路径与目标都没变时，不必每 tick 重发，但也**不能永久不发**。
-            // 客户端 MediaRenderRegistry 有 5 秒过期机制（停发 = 链接器被拆），
+            // 客户端 MediaRenderRegistry 有过期机制（停发 = 链接器被拆），
             // 因此「状态变化立即发、状态未变每 HEARTBEAT_MS 补发一次」。
             String prev = LAST_SENT.get(gatherer.getBlockPos());
             String now = renderPos.asLong() + "|" + mediaPath + "|" + mode;
@@ -113,6 +124,11 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
             boolean changed = !now.equals(prev);
             boolean heartbeatDue = lastAt == null || nowMs - lastAt >= HEARTBEAT_MS;
             if (changed || heartbeatDue) {
+                // 清理：链接器被拆除时 blockEntity 没了，这两个 Map 会留下孤儿条目（只写不读 = 内存泄漏）。
+                // 周期性剔除「很久没被任何链接器访问」的条目。
+                if ((CLEANUP_COUNTER.incrementAndGet() % CLEANUP_INTERVAL) == 0) {
+                    netmusicdisplay$evictStale(nowMs);
+                }
                 LAST_SENT.put(gatherer.getBlockPos(), now);
                 LAST_SENT_AT.put(gatherer.getBlockPos(), nowMs);
                 if (context.level() instanceof ServerLevel serverLevel) {
@@ -135,6 +151,19 @@ public class FlapDisplayMediaSource extends SingleLineDisplaySource {
             }
         }
         return EMPTY_LINE;
+    }
+
+    /**
+     * 剔除长期未被访问的发送记录，防止链接器被拆后这两个 Map 无限增长
+     * （本项目已有「只写不读的 Map 是无界内存泄漏」的教训）。
+     */
+    private static void netmusicdisplay$evictStale(long nowMs) {
+        long cutoff = nowMs - STALE_MS;
+        try {
+            LAST_SENT_AT.entrySet().removeIf(e -> e.getValue() < cutoff);
+            LAST_SENT.keySet().removeIf(p -> !LAST_SENT_AT.containsKey(p));
+        } catch (Throwable ignored) {
+        }
     }
 
     /** 信息源：生成文本行（走原版翻牌字符渲染） */

@@ -17,25 +17,57 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * 暂停续播 Mixin：拦截 CD 播放机的「从头播放」逻辑。
  *
- * 原理：
- * Net Music 的 setPlayToClient() 会在异步回调里调用 setCurrentTime(songTime*20+64)，
- * 把剩余时间重置为整首歌的时长——这就是「暂停后继续播放从头开始」的根因。
+ * ============================ 原版链路（javap 逐条验证） ============================
  *
- * 这里在 setPlayToClient() 开头检测是否为「暂停续播」（未播放且处于歌曲中途），
- * 若是，则把下一次 setCurrentTime() 的重置拦截掉，让剩余时间保持暂停时的位置，
- * 并把续播起始位置通过 SeekMessage 发给客户端，让客户端声音也从暂停点继续。
+ *   setPlayToClient(info)
+ *     └─ MusicPlayResolverManager.resolve(info)            // 异步解析真实音频地址
+ *        .thenAcceptAsync(lambda$setPlayToClient$0, server) // ★ 在服务端线程池里执行
+ *             ├─ setCurrentTime(info.songTime * 20 + 64)   // ← 把「剩余时间」重置为整首歌
+ *             ├─ this.isPlay = true
+ *             └─ sendToNearby(MusicToClientMessage(...))    // 通知客户端开始播放
+ *
+ *   每 tick：tickTime() 无条件把 currentTime 减 1（减到 0 为止）
+ *   归零后 tick() 里再 setPlayToClient(...) → 循环播放
+ *
+ *   客户端 NetMusicSound.tickTimes = timeSecond * 20（整首歌 tick 数），无 +64
+ *
+ * 「暂停后继续播放会从头开始」的根因就是那行 setCurrentTime(songTime*20+64)。
+ *
+ * ============================ 本类的做法与两个坑 ============================
+ *
+ * 【坑一：+64 不是歌曲长度】
+ *   currentTime 的初值是 songTime*20 + 64，其中 +64 只是原版留的余量，
+ *   歌曲真实长度是 songTime*20（与客户端 tickTimes 同源）。
+ *   因此「暂停时已播到第几 tick」= (songTime*20 + 64) - currentTime。
+ *   早期版本误把 (songTime*20+64) 当作总长去算 seek 起点，多算了 64 tick ≈ 3.2 秒，
+ *   表现为续播位置偏后；且越接近结尾越容易判成「没在播」而完全不续播。
+ *
+ * 【坑二：不能用一个实例字段当「本次是续播」的标志】
+ *   setCurrentTime() 是在 resolve(...) 的**异步回调**里调用的（服务端线程池），
+ *   与我们检测续播的时刻相隔任意长；若同一玩家/同一方块在此期间再次触发播放，
+ *   标志就会被覆盖。早期版本用 `private volatile boolean resuming` 单字段，属于竞态。
+ *   改为按「方块坐标 → 该次续播的起始 tick」的 Map，回调里按坐标取用。
  */
 @Mixin(TileEntityMusicPlayer.class)
 public abstract class TileEntityMusicPlayerMixin {
 
     private static final Logger LOGGER = LogManager.getLogger("NetMusicDisplay");
 
-    /** 标记下一次 setCurrentTime() 是否为「从头播放的重置」，需要被拦截 */
+    /**
+     * 方块坐标 → 本次待拦截的「从头播放」重置所对应的续播起始 tick。
+     *
+     * key 用 BlockPos 而非实例字段，规避 setPlayToClient 的异步回调竞态；
+     * value 为 -1 表示「本次确实要拦截重置，但起点是 0（从头）」这种边界情况不使用——
+     * 只在真的续播（tick > 0）时放入，取用后立即移除。
+     */
     @Unique
-    private volatile boolean netmusicdisplay$resuming = false;
+    private static final Map<BlockPos, Integer> netmusicdisplay$pendingResume = new ConcurrentHashMap<>();
 
     @Shadow
     public abstract boolean isPlay();
@@ -58,66 +90,70 @@ public abstract class TileEntityMusicPlayerMixin {
     }
 
     /**
-     * 在 setPlayToClient() 开头判断本次是否为暂停续播。
-     * 条件是：暂停续播开关开启、当前未播放、且剩余时间处于 (0, 总时长) 区间。
-     * 若是续播，立即把起始位置发给客户端（SeekMessage 先于 MusicToClientMessage 到达）。
+     * 在 setPlayToClient() 开头判断本次是否为暂停续播，并把起始位置发给客户端。
      *
-     * 【2026-09-27 修正 total 的算法】
-     * 原版链路的真实基准（javap 验证 TileEntityMusicPlayer / NetMusicSound 字节码）：
-     *   lambda$setPlayToClient$0  → setCurrentTime(songTime * 20 + 64)   ← +64 是余量
-     *   每个 tick 都无条件 tickTime() 把 currentTime 减 1（到 0 停）
-     *   时间耗尽后 tick() 里再 setPlayToClient(songInfo) 触发重新播放
-     *   NetMusicSound.tickTimes  = timeSecond * 20                       ← 无 +64
-     *
-     * 所以「暂停瞬间正在播到第几秒」= (songTime*20 + 64) - currentTime，
-     * 不能再拿 total 当歌曲总长去算 seek —— 那会多算 64 tick（3.2 秒），
-     * 表现为续播位置偏后（+3.2 秒）且靠近结尾时干脆判成「没在播」而不续播。
+     * 条件：暂停续播开关开启、当前未播放、且已播位置处于 (0, 歌曲长度) 之间。
+     * 若是续播：记入 pendingResume（供异步回调里的 setCurrentTime 拦截使用），
+     * 并立即发 SeekMessage —— 它必须早于 MusicToClientMessage 到达客户端，
+     * 否则 NetMusicSound 构造时读不到续播位置。
      */
     @Inject(method = "setPlayToClient", at = @At("HEAD"))
     private void netmusicdisplay$detectResume(ItemMusicCD.SongInfo info, CallbackInfo ci) {
+        BlockEntity be = (BlockEntity) (Object) this;
+        BlockPos pos = be.getBlockPos();
+
         if (!isPauseResumeEnabled()) {
-            netmusicdisplay$resuming = false;
+            netmusicdisplay$pendingResume.remove(pos);
             return;
         }
-        int songTicks = info.songTime * 20;   // 歌曲真实长度（tick），与 NetMusicSound.tickTimes 同源
-        int total = songTicks + 64;           // 原版给 currentTime 的初始值（含 64 tick 余量）
+
+        int songTicks = info.songTime * 20;   // 歌曲真实长度（tick），与客户端 tickTimes 同源
+        int total = songTicks + 64;           // 原版赋给 currentTime 的初值（含 64 tick 余量）
         int current = getCurrentTime();
-        int played = total - current;         // 暂停时已经播放到的位置（tick）
-        // 未在播放且处于歌曲中途 → 视为续播，拦截即将发生的重置
+        int played = total - current;         // 暂停时已播放到的位置（tick）
+
         boolean resuming = !isPlay() && current > 0 && current < total
                 && played > 0 && played < songTicks;
-        netmusicdisplay$resuming = resuming;
-        LOGGER.info("[NetMusicDisplay] detectResume: isPlay={} current={} total={} playedTick={} ({}.{}秒) resuming={}",
-                isPlay(), current, total, played, played / 20, played % 20, resuming);
+
+        LOGGER.info("[NetMusicDisplay] detectResume: pos={} isPlay={} current={} total={} playedTick={} ({}.{}秒) resuming={}",
+                pos, isPlay(), current, total, played, played / 20, played % 20, resuming);
+
         if (resuming) {
+            netmusicdisplay$pendingResume.put(pos, played);
             LOGGER.info("[NetMusicDisplay] 续播：startTick={} ({}秒)", played, played / 20.0);
-            netmusicdisplay$sendSeek(played);
+            netmusicdisplay$sendSeek(pos, played);
+        } else {
+            netmusicdisplay$pendingResume.remove(pos);
         }
     }
 
     /**
      * 拦截「从头播放」的剩余时间重置。
-     * 仅在检测到续播时生效，取消本次重置，保持暂停位置不变。
+     * 仅在本次续播已登记时生效，取消本次重置，保持暂停位置不变。
+     *
+     * 注意：本方法可能在服务端线程池里被调用（resolve 的异步回调），
+     * 所以状态放在按坐标索引的 Map 里，而不是实例字段。
      */
     @Inject(method = "setCurrentTime", at = @At("HEAD"), cancellable = true)
     private void netmusicdisplay$blockTimeReset(int time, CallbackInfo ci) {
-        if (netmusicdisplay$resuming) {
-            LOGGER.info("[NetMusicDisplay] blockTimeReset: 拦截 setCurrentTime({}), 保持 currentTime={}", time, getCurrentTime());
+        BlockPos pos = ((BlockEntity) (Object) this).getBlockPos();
+        Integer pending = netmusicdisplay$pendingResume.remove(pos);
+        if (pending != null) {
+            LOGGER.info("[NetMusicDisplay] blockTimeReset: 拦截 setCurrentTime({})，保持续播位置 {} tick",
+                    time, pending);
             ci.cancel();
-            netmusicdisplay$resuming = false;
         }
     }
 
     /** 把续播起始位置发给附近玩家（强转 BlockEntity 拿 level/pos，避免 @Shadow 父类成员） */
     @Unique
-    private void netmusicdisplay$sendSeek(int startTick) {
+    private void netmusicdisplay$sendSeek(BlockPos pos, int startTick) {
         try {
             BlockEntity be = (BlockEntity) (Object) this;
             Level lvl = be.getLevel();
             if (lvl == null) {
                 return;
             }
-            BlockPos pos = be.getBlockPos();
             NetworkHandler.sendToNearby(lvl, pos, new SeekMessage(pos, startTick));
         } catch (Exception e) {
             LOGGER.error("[NetMusicDisplay] 发送续播位置失败", e);
