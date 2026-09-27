@@ -129,25 +129,42 @@ public final class MediaManager {
 
     /**
      * 客户端每刻调用：
-     * 1) 清理已暂停且长时间无人观看的播放器（防 VIDEOS Map 只增不减的泄漏，
-     *    以及 SourceDataLine 原生资源泄漏）。仅处理 idle-expired 的实例，进行中的播放不受影响。
-     * 2) 【2026-09-27 新增】方块存在性核对：翻牌显示器被拆除后，注册表条目仍在（要等 30s 过期），
-     *    媒体画面/声音会「继续显示」——这是用户明确反馈的问题。这里每刻核对一次：
-     *    注册坐标处若已不是翻牌 BE，立即注销并停掉其媒体（视频声音随之停止）。
-     * 3) 【新增】孤儿视频回收：注册表已不再引用任何视频时停止它（双保险）。
+     * 1) 方块存在性核对：翻牌显示器被拆除后立即注销并停掉其媒体（视频声音随之立即停止）。
+     * 2) 【2026-09-27 新增】游戏菜单（ESC）暂停：暂停所有视频播放器（画面冻结 + 立即静音），
+     *    关闭菜单后恢复。借鉴成熟视频模组的通用行为。
+     * 3) 已 stop() 的残留实例清理（防 VIDEOS Map 泄漏）。
      */
     public static void tick() {
         sweepRemovedDisplays();
         if (VIDEOS.isEmpty()) {
             return;
         }
+        boolean menuPaused = isGameMenuPaused();
+        if (menuPaused != lastMenuPaused) {
+            lastMenuPaused = menuPaused;
+            for (VideoPlayer vp : VIDEOS.values()) {
+                vp.setMenuPaused(menuPaused);
+            }
+        }
         for (java.util.Iterator<java.util.Map.Entry<String, VideoPlayer>> it =
                  VIDEOS.entrySet().iterator(); it.hasNext(); ) {
             java.util.Map.Entry<String, VideoPlayer> e = it.next();
-            if (e.getValue().isIdleExpired()) {
+            if (e.getValue().isStopped()) {
                 it.remove();
-                e.getValue().stop();
             }
+        }
+    }
+
+    /** 上一刻的游戏菜单暂停状态（用于边沿触发暂停/恢复） */
+    private static boolean lastMenuPaused = false;
+
+    /** 游戏是否处于暂停菜单（ESC，单人/联机的暂停界面都会命中） */
+    private static boolean isGameMenuPaused() {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            return mc != null && mc.isPaused();
+        } catch (Throwable t) {
+            return false;
         }
     }
 
@@ -233,11 +250,15 @@ public final class MediaManager {
 
     /**
      * 可播放的视频容器扩展名。
-     * 仅列 jcodec 真正能解的封装：MP4 系（mp4/m4v/mov 同为 ISO BMFF，MP4Demuxer 可处理）。
+     * 基础清单 = jcodec 真正能解的封装（MP4 系；编码需 H.264）。
      * 注意：jcodec 0.2.5 【没有 AVI demuxer】，avi 曾出现在选择列表里但必然解码失败，已移除。
-     * 容器内编码需为 H.264（jcodec 也不支持 H.265/AV1）。
+     * 【2026-09-27】检测到 FFmpeg 后端时（见 FfmpegPipeDecoder），额外开放 mkv/avi/webm/flv/wmv/ts
+     * （H.265/AV1 等编码也随之支持）——与成熟视频模组「纯 Java 兜底 + FFmpeg 升级」的结构一致。
      */
     private static final String[] VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov"};
+
+    /** 仅在 FFmpeg 后端可用时可播放的容器 */
+    private static final String[] FFMPEG_VIDEO_EXTENSIONS = {".mkv", ".avi", ".webm", ".flv", ".wmv", ".ts"};
 
     /** 支持的静态图 / 动图扩展名（WebP 由 TwelveMonkeys 解码，含被错命名为 .png 的 WebP） */
     private static final String[] IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"};
@@ -251,6 +272,13 @@ public final class MediaManager {
         for (String ext : VIDEO_EXTENSIONS) {
             if (lower.endsWith(ext)) {
                 return true;
+            }
+        }
+        if (FfmpegPipeDecoder.isAvailable()) {
+            for (String ext : FFMPEG_VIDEO_EXTENSIONS) {
+                if (lower.endsWith(ext)) {
+                    return true;
+                }
             }
         }
         return false;
@@ -270,11 +298,17 @@ public final class MediaManager {
         return false;
     }
 
-    /** 媒体选择界面用的扩展名清单（图片 + 视频） */
+    /** 媒体选择界面用的扩展名清单（图片 + 视频；FFmpeg 可用时含 mkv/avi 等额外容器） */
     public static String[] supportedExtensions() {
-        String[] all = new String[IMAGE_EXTENSIONS.length + VIDEO_EXTENSIONS.length];
+        String[] video = VIDEO_EXTENSIONS;
+        if (FfmpegPipeDecoder.isAvailable()) {
+            video = new String[VIDEO_EXTENSIONS.length + FFMPEG_VIDEO_EXTENSIONS.length];
+            System.arraycopy(VIDEO_EXTENSIONS, 0, video, 0, VIDEO_EXTENSIONS.length);
+            System.arraycopy(FFMPEG_VIDEO_EXTENSIONS, 0, video, VIDEO_EXTENSIONS.length, FFMPEG_VIDEO_EXTENSIONS.length);
+        }
+        String[] all = new String[IMAGE_EXTENSIONS.length + video.length];
         System.arraycopy(IMAGE_EXTENSIONS, 0, all, 0, IMAGE_EXTENSIONS.length);
-        System.arraycopy(VIDEO_EXTENSIONS, 0, all, IMAGE_EXTENSIONS.length, VIDEO_EXTENSIONS.length);
+        System.arraycopy(video, 0, all, IMAGE_EXTENSIONS.length, video.length);
         return all;
     }
 
@@ -370,24 +404,32 @@ public final class MediaManager {
             return getFrame(local, System.currentTimeMillis());
         }
         VideoPlayer vp = VIDEOS.get(local);
-        if (vp == null && !FAILED.contains(local)) {
-            try {
-                File f = new File(local);
-                if (f.isFile()) {
-                    // 网络视频把下载器交给播放器：读取超出已下载范围时等待而非 EOF，
-                    // 实现边下边播（本地视频 downloader 为 null，走普通通道）
-                    vp = new VideoPlayer(path, f, isVideoSoundEnabled(), downloaderFor(path));
-                    VIDEOS.put(local, vp);
-                } else {
-                    FlapDisplayPlus.LOGGER.warn("[Media] 视频文件不存在: {}", local);
+        if (vp == null || vp.isStopped()) {
+            vp = null;
+            if (!FAILED.contains(local)) {
+                try {
+                    File f = new File(local);
+                    if (f.isFile()) {
+                        // 网络视频把下载器交给播放器：读取超出已下载范围时等待而非 EOF，
+                        // 实现边下边播（本地视频 downloader 为 null，走普通通道）
+                        vp = new VideoPlayer(path, f, isVideoSoundEnabled(), downloaderFor(path));
+                        VIDEOS.put(local, vp);
+                    } else {
+                        FlapDisplayPlus.LOGGER.warn("[Media] 视频文件不存在: {}", local);
+                        FAILED.add(local);
+                    }
+                } catch (Throwable t) {
+                    FlapDisplayPlus.LOGGER.warn("[Media] 视频播放器创建失败: {} {}", local, t.toString());
                     FAILED.add(local);
                 }
-            } catch (Throwable t) {
-                FlapDisplayPlus.LOGGER.warn("[Media] 视频播放器创建失败: {} {}", local, t.toString());
-                FAILED.add(local);
             }
         }
-        return vp == null ? null : vp.getFrame();
+        if (vp == null) {
+            return null;
+        }
+        // 新建/已存在的播放器同步游戏菜单暂停状态（幂等；清空后立刻重选视频的恢复路径也覆盖到）
+        vp.setMenuPaused(isGameMenuPaused());
+        return vp.getFrame();
     }
 
     /**

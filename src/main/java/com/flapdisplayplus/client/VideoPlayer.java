@@ -8,7 +8,7 @@
  *   → javax.sound.sampled.SourceDataLine 播放；有音轨时以音频线为【主时钟】，
  *   无音轨/静音时用墙钟，保证画面与声音同步。
  * - 循环播放：视频线程与音频线程在各自 EOF 处会合（屏障）重置时钟后重开。
- * - 无人观看自动暂停：3 秒无渲染访问 → 暂停解码与音频线；再次访问恢复。
+ * - 暂停 = 游戏菜单（ESC）暂停，由 MediaManager 每刻驱动；清空/拆方块立即硬停，无自动续播。
  *
  * 注意：
  * - 纯 Java H.264 解码速度可能慢于实时，此时视频会自动降速播放（宁可慢放也绝不冻结），
@@ -54,8 +54,6 @@ public final class VideoPlayer {
 
     // 输出纹理长边上限 / 显示帧率上限 改为从 Config 读取（见 uploadFrame / videoLoop），
     // 方便在「卡顿 ↔ 清晰度」之间按需调整，无需改代码重编译。
-    /** 切换走后，播放器暂停闲置超过此时长（ms）则由 tick 彻底停止并移除（防泄漏） */
-    private static final long IDLE_STOP_MS = 60000;
 
     /**
      * 【2026-09-27 重写 —— 修「有声音但画面卡住不动」】
@@ -121,9 +119,12 @@ public final class VideoPlayer {
 
     private volatile boolean stopped;
 
-    /** 暂停状态（无渲染访问 3 秒后进入） */
+    /**
+     * 暂停状态（唯一来源 = 游戏菜单暂停，由 MediaManager 每刻驱动）。
+     * 【2026-09-27 移除「无人观看 3 秒自动暂停/回来续播」】用户明确不需要视频的暂停续播：
+     * 旧逻辑在方块拆除后要等 3 秒才停声，且与 stop() 竞态时会诱发「声音停了又复活」。
+     */
     private volatile boolean paused;
-    private volatile long lastAccessMs = System.currentTimeMillis();
     private final Object pauseLock = new Object();
 
     /** 音频线（主时钟来源） */
@@ -183,14 +184,40 @@ public final class VideoPlayer {
         FlapDisplayPlus.LOGGER.info("[VideoPlayer] 启动: {} 声音={}", path, soundOn);
     }
 
-    /** 渲染线程每帧调用：返回当前帧纹理（null=首帧未就绪） */
+    /** 渲染线程每帧调用：返回当前帧纹理（null=首帧未就绪）。暂停由 MediaManager 驱动，这里不再自动恢复 */
     public ResourceLocation getFrame() {
-        lastAccessMs = System.currentTimeMillis();
-        if (paused) {
-            resume();
-        }
         promoteStaged();
         return textureLoc;
+    }
+
+    /** 游戏菜单暂停/恢复（MediaManager 每刻驱动；幂等）。暂停 = 冻结画面 + 立即静音 */
+    public void setMenuPaused(boolean p) {
+        if (stopped || p == paused) {
+            return;
+        }
+        synchronized (this) {
+            if (stopped) {
+                return;
+            }
+            paused = p;
+            SourceDataLine l = line;
+            if (l != null) {
+                try {
+                    if (p) {
+                        // 先把当前播放位置定格到墙钟，恢复时两钟仍一致
+                        wallEpochMs = System.currentTimeMillis() - clockMs();
+                        l.stop();
+                        l.flush();
+                    } else {
+                        l.start();
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        synchronized (pauseLock) {
+            pauseLock.notifyAll();
+        }
     }
 
     public int getTextureWidth() {
@@ -201,22 +228,29 @@ public final class VideoPlayer {
         return height;
     }
 
+    /**
+     * 硬停（【2026-09-27 重写语义】清空/拆方块后必须立即无声）：
+     * 顺序关键 —— 先置 stopped 再关音频线：旧实现先 interrupt 后关线，且音频线程在
+     * write 阻塞期间 interrupt 无效；更糟的是若音频线程刚从 pauseLock.wait 醒来，
+     * 可能重新走到 ensureLineOpen 把【已关闭的线重新打开】→ 声音复活。
+     * 现在：stopped 置位后 ensureLineOpen / resetClocks 一律拒绝动作，声音不可能复活。
+     */
     public void stop() {
         stopped = true;
         paused = false;
-        if (videoThread != null) {
-            videoThread.interrupt();
-        }
-        if (audioThread != null) {
-            audioThread.interrupt();
-        }
+        closeLine();
         synchronized (pauseLock) {
             pauseLock.notifyAll();
         }
         synchronized (barrierLock) {
             barrierLock.notifyAll();
         }
-        closeLine();
+        if (videoThread != null) {
+            videoThread.interrupt();
+        }
+        if (audioThread != null) {
+            audioThread.interrupt();
+        }
         // 纹理必须在渲染线程释放（会 close 掉 NativeImage 并 delete GL 纹理）
         Minecraft.getInstance().execute(() -> {
             ResourceLocation[] ls = locs;
@@ -253,6 +287,11 @@ public final class VideoPlayer {
         });
     }
 
+    /** 是否已被 stop()（MediaManager 用它把残留的已停实例从 VIDEOS 表清掉） */
+    public boolean isStopped() {
+        return stopped;
+    }
+
     private void closeLine() {
         SourceDataLine l = line;
         line = null;
@@ -282,6 +321,26 @@ public final class VideoPlayer {
 
     private void videoLoop() {
         while (!stopped) {
+            // ===== FFmpeg 管道解码后端（可选，借鉴 Functional TVs / MP4 Video Player 的成熟做法）=====
+            // 找得到 ffmpeg.exe 就用它：支持 H.264/H.265/AV1 + mkv/avi/webm 等任意容器，
+            // 解码速度远快于纯 Java（720p 实时无压力 → 不糊不卡）；找不到则退回 jcodec。
+            FfmpegPipeDecoder fdec = tryOpenFfmpeg();
+            if (fdec != null) {
+                FlapDisplayPlus.LOGGER.info("[VideoPlayer] FFmpeg 解码后端 {}x{} @{}fps: {}",
+                        fdec.width, fdec.height, (int) fdec.fps, path);
+                try {
+                    ffmpegLoop(fdec);
+                } catch (Throwable t) {
+                    FlapDisplayPlus.LOGGER.warn("[VideoPlayer] FFmpeg 循环异常: {} {}", path, t.toString());
+                } finally {
+                    fdec.close();
+                }
+                if (stopped) {
+                    break;
+                }
+                loopBarrier();
+                continue;
+            }
             SeekableByteChannel ch = null;
             try {
                 ch = openChannel();
@@ -356,10 +415,60 @@ public final class VideoPlayer {
         }
     }
 
-    /** 等到播放时钟到达 ptsMs（期间处理暂停） */
+    /** FFmpeg 解码后端打开（失败/不存在返回 null → 走 jcodec） */
+    private FfmpegPipeDecoder tryOpenFfmpeg() {
+        try {
+            String exe = FfmpegPipeDecoder.locate();
+            if (exe != null) {
+                return FfmpegPipeDecoder.open(file, exe);
+            }
+        } catch (Throwable ignore) {
+        }
+        return null;
+    }
+
+    /**
+     * FFmpeg 管道解码主循环（结构与 jcodec 路径一致：PTS 节流 + 硬滞后 seek 重同步 + 墙钟显示）。
+     */
+    private void ffmpegLoop(FfmpegPipeDecoder dec) {
+        frameDurMs = dec.fps > 0 ? 1000.0 / dec.fps : 33.33;
+        long minGap = 1000L / Math.max(1, Config.MEDIA_VIDEO_FPS.get());
+        long lastResyncMs = 0;
+        long lastShownWallMs = 0;
+        long frameIdx = 0;
+        while (!stopped) {
+            Picture pic = dec.nextFrame();
+            if (pic == null) {
+                return; // EOF → 外层 barrier 会合后重开
+            }
+            long ptsMs = (long) (frameIdx * frameDurMs);
+            frameIdx++;
+            waitUntil(ptsMs);
+            if (stopped) {
+                return;
+            }
+            long nowMs = System.currentTimeMillis();
+            long late = clockMs() - ptsMs;
+            if (late > RESYNC_HARD_LATE_MS && nowMs - lastResyncMs > RESYNC_MIN_INTERVAL_MS) {
+                lastResyncMs = nowMs;
+                double sec = Math.max(0.0, clockMs() / 1000.0);
+                if (dec.seekTo(sec)) {
+                    frameIdx = (long) (sec * 1000.0 / Math.max(1e-6, frameDurMs));
+                    lastShownWallMs = 0;
+                    continue;
+                }
+                // seek 失败：解码器已死，nextFrame 会返回 null → 外层重开
+            }
+            if (nowMs - lastShownWallMs >= minGap) {
+                uploadFrame(pic);
+                lastShownWallMs = nowMs;
+            }
+        }
+    }
+
+    /** 等到播放时钟到达 ptsMs（期间处理菜单暂停） */
     private void waitUntil(long ptsMs) {
         while (!stopped) {
-            maybePause();
             if (paused) {
                 synchronized (pauseLock) {
                     try {
@@ -377,42 +486,6 @@ public final class VideoPlayer {
                 return;
             }
             sleepQuiet(Math.min(remain, 40));
-        }
-    }
-
-    /** 无人观看（3 秒无渲染访问）→ 暂停 */
-    private void maybePause() {
-        if (!paused && System.currentTimeMillis() - lastAccessMs > 3000) {
-            synchronized (this) {
-                if (!paused) {
-                    paused = true;
-                    SourceDataLine l = line;
-                    if (l != null) {
-                        try {
-                            l.stop();
-                        } catch (Throwable ignored) {
-                        }
-                    }
-                    FlapDisplayPlus.LOGGER.info("[VideoPlayer] 暂停（无人观看）: {}", path);
-                }
-            }
-        }
-    }
-
-    private void resume() {
-        synchronized (this) {
-            paused = false;
-            wallEpochMs = System.currentTimeMillis() - Math.max(0, audioClockSafe());
-            SourceDataLine l = line;
-            if (l != null && soundOn) {
-                try {
-                    l.start();
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        synchronized (pauseLock) {
-            pauseLock.notifyAll();
         }
     }
 
@@ -794,7 +867,6 @@ public final class VideoPlayer {
 
                 Packet pkt;
                 while (!stopped && (pkt = track.nextFrame()) != null) {
-                    maybePause();
                     if (paused) {
                         synchronized (pauseLock) {
                             try {
@@ -839,6 +911,9 @@ public final class VideoPlayer {
                     ensureLineOpen(fmt);
                     SourceDataLine l = line;
                     if (l != null) {
+                        if (stopped) {
+                            break; // stop() 后绝不再写入（防声音复活）
+                        }
                         l.write(pcm, 0, pcm.length);
                     }
                 }
@@ -871,9 +946,9 @@ public final class VideoPlayer {
         }
     }
 
-    /** 打开/复用 SourceDataLine（按解码出的 PCM 格式） */
+    /** 打开/复用 SourceDataLine（按解码出的 PCM 格式）。stop() 后拒绝打开 —— 这是「声音复活」的封堵点 */
     private void ensureLineOpen(AudioFormat jfmt) {
-        if (line != null || jfmt == null) {
+        if (stopped || line != null || jfmt == null) {
             return;
         }
         try {
@@ -969,8 +1044,11 @@ public final class VideoPlayer {
         }
     }
 
-    /** 重置两个时钟基准，使下一轮从 0 开始 */
+    /** 重置两个时钟基准，使下一轮从 0 开始。stop() 后禁止动作（防止把已关闭的线重新 start） */
     private void resetClocks() {
+        if (stopped) {
+            return;
+        }
         SourceDataLine l = line;
         if (l != null) {
             try {
@@ -992,10 +1070,5 @@ public final class VideoPlayer {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-    }
-
-    /** 切换走后闲置超时判定（供 MediaManager.tick 清理，防泄漏/僵尸复播） */
-    public boolean isIdleExpired() {
-        return paused && (System.currentTimeMillis() - lastAccessMs > IDLE_STOP_MS);
     }
 }
