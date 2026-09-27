@@ -11,7 +11,7 @@
 | Project name | FlapDisplayPlus |
 | Project slug | `flapdisplayplus` |
 | Project title（显示名） | FlapDisplayPlus 翻牌万象 |
-| Summary（≤256字符） | Turn Create's Flap Displays into real media screens: images, GIFs, videos, live info (time/weather/TPS) — plus album covers & synced lyrics with Net Music. 让翻牌显示图片/视频/实时信息/歌词。 |
+| Summary（≤256字符） | Turn Create's Flap Displays into real screens — images, GIFs, videos, live info, and Net Music album art & lyrics. 让翻牌显示器播放图片/视频/实时信息/歌词。 |
 | Project icon | `src/main/resources/flapdisplayplus_logo.png`（仓库内 128×128） |
 | Categories | Technology（主）· Decoration |
 | Environment | Client & Server（必选双端） |
