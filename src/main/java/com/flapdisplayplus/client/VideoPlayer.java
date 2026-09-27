@@ -120,6 +120,18 @@ public final class VideoPlayer {
     private volatile boolean stopped;
 
     /**
+     * 最近一次渲染访问（getFrame）的时间戳。
+     * 注意这【不是】暂停机制（自动暂停续播已按需求移除）——
+     * MediaManager 据此回收「画面已消失却还在出声」的孤儿播放器（硬停，不续播）。
+     */
+    private volatile long lastRenderAccessMs = System.currentTimeMillis();
+
+    /** 供 MediaManager.tick 做孤儿回收判断 */
+    public long lastRenderAccessMs() {
+        return lastRenderAccessMs;
+    }
+
+    /**
      * 暂停状态（唯一来源 = 游戏菜单暂停，由 MediaManager 每刻驱动）。
      * 【2026-09-27 移除「无人观看 3 秒自动暂停/回来续播」】用户明确不需要视频的暂停续播：
      * 旧逻辑在方块拆除后要等 3 秒才停声，且与 stop() 竞态时会诱发「声音停了又复活」。
@@ -186,6 +198,7 @@ public final class VideoPlayer {
 
     /** 渲染线程每帧调用：返回当前帧纹理（null=首帧未就绪）。暂停由 MediaManager 驱动，这里不再自动恢复 */
     public ResourceLocation getFrame() {
+        lastRenderAccessMs = System.currentTimeMillis();
         promoteStaged();
         return textureLoc;
     }

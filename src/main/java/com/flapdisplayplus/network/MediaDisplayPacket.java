@@ -18,6 +18,7 @@
 package com.flapdisplayplus.network;
 
 import com.flapdisplayplus.FlapDisplayPlus;
+import com.flapdisplayplus.client.MediaManager;
 import com.flapdisplayplus.client.MediaRenderRegistry;
 import com.simibubi.create.content.trains.display.FlapDisplayBlockEntity;
 import io.netty.buffer.ByteBuf;
@@ -72,10 +73,20 @@ public record MediaDisplayPacket(BlockPos flapPos, String mediaPath, String disp
             } else if ((PACKET_RX.incrementAndGet() % 200) == 0) {
                 FlapDisplayPlus.LOGGER.debug("[MediaPacket] 心跳刷新 renderKey={} media={}", key, incoming);
             }
+            String oldPath = old == null ? null : old.mediaPath;
             if (incoming.isEmpty()) {
                 MediaRenderRegistry.remove(key);
+                // 【孤儿音频修复】清空只删注册表是不够的：旧视频的播放器若仍被别的
+                // 显示器引用则保留，否则必须立即硬停 —— 否则「画面消失但声音继续播」
+                if (oldPath != null) {
+                    MediaManager.stopVideoIfUnreferenced(oldPath);
+                }
             } else {
                 MediaRenderRegistry.put(key, incoming, msg.displayMode());
+                // 换了媒体：旧的立即回收（避免旧视频声音残留）
+                if (oldPath != null && !oldPath.equals(incoming)) {
+                    MediaManager.stopVideoIfUnreferenced(oldPath);
+                }
             }
         });
     }

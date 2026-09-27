@@ -130,9 +130,10 @@ public final class MediaManager {
     /**
      * 客户端每刻调用：
      * 1) 方块存在性核对：翻牌显示器被拆除后立即注销并停掉其媒体（视频声音随之立即停止）。
-     * 2) 【2026-09-27 新增】游戏菜单（ESC）暂停：暂停所有视频播放器（画面冻结 + 立即静音），
-     *    关闭菜单后恢复。借鉴成熟视频模组的通用行为。
-     * 3) 已 stop() 的残留实例清理（防 VIDEOS Map 泄漏）。
+     * 2) 游戏菜单（ESC）暂停：暂停所有视频播放器（画面冻结 + 立即静音），关闭菜单后恢复。
+     * 3) 【孤儿回收兜底】超过 RENDER_STALE_MS 没有任何渲染访问的播放器立即硬停并移除。
+     *    这是「画面消失但声音还在播」的最后防线：无论注册表条目以何种路径消失
+     *    （收包清除、过期清除、拆方块、清空），只要渲染端不再取帧，音频就活不过 5 秒。
      */
     public static void tick() {
         sweepRemovedDisplays();
@@ -146,23 +147,38 @@ public final class MediaManager {
                 vp.setMenuPaused(menuPaused);
             }
         }
+        long now = System.currentTimeMillis();
         for (java.util.Iterator<java.util.Map.Entry<String, VideoPlayer>> it =
                  VIDEOS.entrySet().iterator(); it.hasNext(); ) {
             java.util.Map.Entry<String, VideoPlayer> e = it.next();
-            if (e.getValue().isStopped()) {
+            VideoPlayer vp = e.getValue();
+            if (vp.isStopped()) {
                 it.remove();
+            } else if (now - vp.lastRenderAccessMs() > RENDER_STALE_MS) {
+                it.remove();
+                vp.stop();
+                FlapDisplayPlus.LOGGER.info("[Media] 孤儿视频回收（{}ms 无渲染访问）: {}",
+                        now - vp.lastRenderAccessMs(), e.getKey());
             }
         }
     }
 
+    /** 渲染端超过这个时长不取帧（画面已消失/不可见），就视为孤儿播放器并硬停 */
+    private static final long RENDER_STALE_MS = 5000;
+
     /** 上一刻的游戏菜单暂停状态（用于边沿触发暂停/恢复） */
     private static boolean lastMenuPaused = false;
 
-    /** 游戏是否处于暂停菜单（仅单人暂停场景；联机不需要暂停视频） */
+    /**
+     * 游戏是否处于暂停菜单（ESC）。
+     * mc.isPaused() 只在【单人】暂停时为 true；连服务器/局域网时游戏本身不暂停、该值恒 false，
+     * 必须同时判断当前打开的是不是 PauseScreen（单人/联机/服务器按 ESC 打开的是同一个类）。
+     */
     private static boolean isGameMenuPaused() {
         try {
             Minecraft mc = Minecraft.getInstance();
-            return mc != null && mc.isPaused();
+            return mc != null && (mc.isPaused()
+                    || mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen);
         } catch (Throwable t) {
             return false;
         }
@@ -202,8 +218,11 @@ public final class MediaManager {
         }
     }
 
-    /** 若该媒体路径已不再被任何注册项引用，则停止其视频播放器（音频随之停止） */
-    private static void stopVideoIfUnreferenced(String mediaPath) {
+    /**
+     * 若该媒体路径已不再被任何注册项引用，则停止其视频播放器（音频随之停止）。
+     * public：网络包收包侧（MediaDisplayPacket）与注册表过期清除也要走这条回收路径。
+     */
+    public static void stopVideoIfUnreferenced(String mediaPath) {
         if (mediaPath == null || mediaPath.isEmpty()) {
             return;
         }

@@ -58,8 +58,14 @@ public final class MediaRenderRegistry {
     public static MediaInfo get(BlockPos pos) {
         Long t = TIMESTAMPS.get(pos);
         if (t != null && System.currentTimeMillis() - t > EXPIRE_MS) {
-            // 链接器已移除/停发：清理失效配置，翻牌恢复原版字符显示
+            // 链接器已移除/停发：清理失效配置，翻牌恢复原版字符显示。
+            // 【孤儿音频修复】过期清除同样必须顺手停掉不再被引用的视频播放器，
+            // 否则「画面没了、声音还在」（此前清空/拆链接器漏声的路径之一）。
+            MediaInfo mi = INFO.get(pos);
             remove(pos);
+            if (mi != null) {
+                MediaManager.stopVideoIfUnreferenced(mi.mediaPath);
+            }
             return null;
         }
         return INFO.get(pos);
