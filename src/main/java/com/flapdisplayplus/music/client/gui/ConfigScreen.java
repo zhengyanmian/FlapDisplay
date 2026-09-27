@@ -461,7 +461,9 @@ public class ConfigScreen extends Screen {
         flow.skip(y - flow.y());                       // 对齐到指定行
         int labelY = flow.y();
         flow.colored(toggleLabel(val.getPath()), FdpWidgets.TEXT);
-        this.addRenderableWidget(FdpButton.create(left + 150 - btnW, labelY, btnW, 20,
+        // 控件列右缘 176：150 时「结果列表模式」这类 6 字标签(54px)会被
+        // 110px 宽按钮(left+40 起)压住 —— 用户截图确认重叠
+        this.addRenderableWidget(FdpButton.create(left + 176 - btnW, labelY, btnW, 20,
                 Component.literal(val.get() ? onText : offText),
                 b -> {
                     val.set(!val.get());
@@ -476,7 +478,7 @@ public class ConfigScreen extends Screen {
         flow.skip(y - flow.y());
         int labelY = flow.y();
         flow.colored(toggleLabel(val.getPath()), FdpWidgets.TEXT);
-        this.addRenderableWidget(FdpWidgets.cycle(left + 150 - btnW, labelY, btnW, 20, val,
+        this.addRenderableWidget(FdpWidgets.cycle(left + 176 - btnW, labelY, btnW, 20, val,
                 this::enumLabel, null));
     }
 
