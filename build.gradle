@@ -10,6 +10,9 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 // ===== 依赖仓库 =====
 // 国内镜像优先；Create 及其传递依赖分散在下面这些 maven 仓库
 repositories {
+    // 项目内置本地仓库（curl 预下好的 jar）：twelvemonkeys 两个 jar 曾因
+    // maven.neoforged.net 的 JVM 侧连接重置反复拉不到，放最前永久兜底。
+    maven { url = uri("file:///${projectDir}/libs/local-maven") }
     // NeoForged 官方仓库（moddev 插件与 neoforge 依赖的来源）。
     // 注意：该域名国内偶发 "Connection reset by peer"，构建失败多为网络抖动，重试即可。
     maven { url = "https://maven.neoforged.net/releases" }

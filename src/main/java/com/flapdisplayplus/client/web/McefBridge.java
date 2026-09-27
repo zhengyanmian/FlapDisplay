@@ -52,8 +52,151 @@ public final class McefBridge {
 
     private static final Map<String, Entry> BROWSERS = new ConcurrentHashMap<>();
     private static final AtomicLong SEQ = new AtomicLong();
+    /** 全局 handler（弹窗拦截 + 音频路由）只注册一次 */
+    private static volatile boolean handlersRegistered;
 
     private McefBridge() {
+    }
+
+    /**
+     * 注册全局 CEF handler（幂等，首次建浏览器前调用）：
+     * <ul>
+     * <li>【弹窗拦截】B 站等站点的链接大量使用 target=_blank / window.open，CEF 默认会为
+     * 弹窗新建离屏浏览器——画面画进我们丢弃的 popup 缓冲，玩家看来就是「点了没反应」。
+     * onBeforePopup 里把目标 URL 改到原浏览器就地打开并取消弹窗。</li>
+     * <li>【音频路由】OSR 模式不挂 CefAudioHandler 就完全没有声音。CEF 以浮点 PCM
+     * 回调音频包，这里转 16-bit 交 Java Sound 播放（与视频播放器同一套 SourceDataLine 机制）。</li>
+     * </ul>
+     */
+    private static void ensureHandlers() {
+        if (handlersRegistered) {
+            return;
+        }
+        synchronized (McefBridge.class) {
+            if (handlersRegistered) {
+                return;
+            }
+            try {
+                org.cef.CefClient cc = MCEF.getClient().getHandle();
+                cc.addLifeSpanHandler(new org.cef.handler.CefLifeSpanHandlerAdapter() {
+                    @Override
+                    public boolean onBeforePopup(org.cef.browser.CefBrowser browser,
+                                                 org.cef.browser.CefFrame frame,
+                                                 String targetUrl, String requestMethod) {
+                        if (browser != null && targetUrl != null && !targetUrl.isEmpty()
+                                && !targetUrl.startsWith("javascript:")
+                                && !targetUrl.startsWith("about:blank")) {
+                            try {
+                                browser.loadURL(targetUrl);
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                        return true; // 一律取消弹窗创建
+                    }
+                });
+                cc.addAudioHandler(new org.cef.handler.CefAudioHandler() {
+                    @Override
+                    public boolean getAudioParameters(org.cef.browser.CefBrowser browser,
+                                                      org.cef.misc.CefAudioParameters parameters) {
+                        return true; // 接受 CEF 提供的参数（通常 48kHz 立体声）
+                    }
+
+                    @Override
+                    public void onAudioStreamStarted(org.cef.browser.CefBrowser browser,
+                                                     org.cef.misc.CefAudioParameters parameters,
+                                                     int channels) {
+                        WebAudio.start(browser, parameters.sampleRate, channels);
+                    }
+
+                    @Override
+                    public void onAudioStreamPacket(org.cef.browser.CefBrowser browser,
+                                                    float[] data, int framesPerChannel, long pts) {
+                        WebAudio.feed(browser, data, framesPerChannel);
+                    }
+
+                    @Override
+                    public void onAudioStreamStopped(org.cef.browser.CefBrowser browser) {
+                        WebAudio.stop(browser);
+                    }
+
+                    @Override
+                    public void onAudioStreamError(org.cef.browser.CefBrowser browser, String error) {
+                        FlapDisplayPlus.LOGGER.warn("[Web] 音频流错误: {}", error);
+                        WebAudio.stop(browser);
+                    }
+                });
+                handlersRegistered = true;
+                FlapDisplayPlus.LOGGER.info("[Web] CEF 全局 handler 已注册（弹窗拦截 + 音频路由）");
+            } catch (Throwable t) {
+                // 注册失败不阻塞视频画面；音频/弹窗退化为基础行为
+                FlapDisplayPlus.LOGGER.warn("[Web] CEF handler 注册失败（弹窗与声音可能异常）: {}", t.toString());
+                handlersRegistered = true;
+            }
+        }
+    }
+
+    /**
+     * CEF 浮点 PCM → Java Sound 播放（每浏览器一条 SourceDataLine）。
+     * write 的天然背压防止缓冲无限增长；CEF 音频线程阻塞可接受。
+     */
+    private static final class WebAudio {
+        private static final Map<org.cef.browser.CefBrowser, javax.sound.sampled.SourceDataLine> LINES =
+                new ConcurrentHashMap<>();
+
+        static void start(org.cef.browser.CefBrowser browser, int sampleRate, int channels) {
+            stop(browser);
+            try {
+                if (channels <= 0 || channels > 2) {
+                    channels = 2; // 只处理单声道/立体声，其它按立体声处理
+                }
+                javax.sound.sampled.AudioFormat fmt =
+                        new javax.sound.sampled.AudioFormat(sampleRate, 16, channels, true, false);
+                javax.sound.sampled.SourceDataLine line =
+                        javax.sound.sampled.AudioSystem.getSourceDataLine(fmt);
+                line.open(fmt, Math.max(8192, sampleRate * channels * 2 / 5)); // ~100ms 缓冲
+                line.start();
+                LINES.put(browser, line);
+                FlapDisplayPlus.LOGGER.info("[Web] 音频开始: {}Hz x{}ch", sampleRate, channels);
+            } catch (Throwable t) {
+                FlapDisplayPlus.LOGGER.warn("[Web] 音频线打开失败: {}", t.toString());
+            }
+        }
+
+        static void feed(org.cef.browser.CefBrowser browser, float[] data, int framesPerChannel) {
+            javax.sound.sampled.SourceDataLine line = LINES.get(browser);
+            if (line == null || framesPerChannel <= 0) {
+                return;
+            }
+            int channels = line.getFormat().getChannels();
+            int samples = Math.min(data.length, framesPerChannel * channels);
+            byte[] out = new byte[samples * 2];
+            for (int i = 0; i < samples; i++) {
+                float v = data[i];
+                if (v > 1f) {
+                    v = 1f;
+                } else if (v < -1f) {
+                    v = -1f;
+                }
+                int s = (int) (v * 32000f);
+                out[2 * i] = (byte) s;
+                out[2 * i + 1] = (byte) (s >> 8);
+            }
+            try {
+                line.write(out, 0, out.length);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        static void stop(org.cef.browser.CefBrowser browser) {
+            javax.sound.sampled.SourceDataLine line = LINES.remove(browser);
+            if (line != null) {
+                try {
+                    line.stop();
+                    line.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
     }
 
     /** 一个网页 = 一个离屏浏览器 + 一张自建 DynamicTexture */
@@ -168,6 +311,7 @@ public final class McefBridge {
         }
         Entry e = new Entry(tex, loc);
         try {
+            ensureHandlers();
             FdpWebBrowser b = new FdpWebBrowser(MCEF.getClient(), url, false, e);
             b.setCloseAllowed();
             b.createImmediately();
@@ -229,6 +373,7 @@ public final class McefBridge {
         }
         try {
             if (e.browser != null) {
+                WebAudio.stop(e.browser);
                 e.browser.close();
             }
         } catch (Throwable t) {
@@ -248,6 +393,65 @@ public final class McefBridge {
     }
 
     // ===== 输入转发（约定照抄 MCEF ExampleScreen 字节码） =====
+
+    /**
+     * GLFW 键码 → Windows 虚拟键码。
+     * MCEFBrowser.sendKeyPress 把键码原样写进 CefKeyEvent（javap 实锤，无任何转换），
+     * 而字母/数字的 GLFW 码恰好等于 Windows VK 码，所以打字一直正常；
+     * 但回车(257≠13)、退格(259≠8)、方向键、F1-F12、小键盘、标点全都错位——
+     * 这就是 B 站搜索框按回车没反应的根因。
+     */
+    private static int toWindowsVk(int glfw) {
+        switch (glfw) {
+            case 257: return 13;   // ENTER
+            case 258: return 9;    // TAB
+            case 259: return 8;    // BACKSPACE
+            case 260: return 45;   // INSERT
+            case 261: return 46;   // DELETE
+            case 262: return 39;   // RIGHT
+            case 263: return 37;   // LEFT
+            case 264: return 40;   // DOWN
+            case 265: return 38;   // UP
+            case 266: return 33;   // PAGE_UP
+            case 267: return 34;   // PAGE_DOWN
+            case 268: return 36;   // HOME
+            case 269: return 35;   // END
+            case 270: return 20;   // CAPS_LOCK
+            case 280: return 145;  // SCROLL_LOCK
+            case 281: return 144;  // NUM_LOCK
+            case 283: return 19;   // PAUSE
+            case 340: case 344: return 16; // SHIFT（左右）
+            case 341: case 345: return 17; // CTRL（左右）
+            case 342: case 346: return 18; // ALT（左右）
+            case 343: case 347: return 91; // SUPER（左右）
+            case 348: return 93;   // MENU
+            case 330: return 110;  // KP_DECIMAL
+            case 331: return 111;  // KP_DIVIDE
+            case 332: return 106;  // KP_MULTIPLY
+            case 333: return 109;  // KP_SUBTRACT
+            case 334: return 107;  // KP_ADD
+            case 335: return 13;   // KP_ENTER
+            case 44:  return 188;  // COMMA → VK_OEM_COMMA
+            case 45:  return 189;  // MINUS → VK_OEM_MINUS
+            case 46:  return 190;  // PERIOD → VK_OEM_PERIOD
+            case 47:  return 191;  // SLASH → VK_OEM_2
+            case 51:  return 186;  // SEMICOLON → VK_OEM_1
+            case 52:  return 187;  // EQUAL → VK_OEM_PLUS
+            case 91:  return 219;  // LEFT_BRACKET → VK_OEM_4
+            case 92:  return 220;  // BACKSLASH → VK_OEM_5
+            case 93:  return 221;  // RIGHT_BRACKET → VK_OEM_6
+            case 96:  return 192;  // GRAVE → VK_OEM_3
+            case 39:  return 222;  // APOSTROPHE → VK_OEM_7
+            default:
+                if (glfw >= 290 && glfw <= 301) {
+                    return glfw - 290 + 112; // F1-F12 → VK_F1(0x70)..
+                }
+                if (glfw >= 320 && glfw <= 329) {
+                    return glfw - 320 + 96;  // KP_0-KP_9 → VK_NUMPAD0(0x60)..
+                }
+                return glfw; // 字母/数字/空格 GLFW 与 VK 相同
+        }
+    }
 
     static void mouseMove(String webPath, int x, int y) {
         Entry e = BROWSERS.get(webPath);
@@ -280,7 +484,7 @@ public final class McefBridge {
     static void keyPress(String webPath, int keyCode, int scanCode, int modifiers) {
         Entry e = BROWSERS.get(webPath);
         if (e != null && e.browser != null) {
-            e.browser.sendKeyPress(keyCode, scanCode, modifiers);
+            e.browser.sendKeyPress(toWindowsVk(keyCode), scanCode, modifiers);
             e.browser.setFocus(true);
         }
     }
@@ -288,7 +492,7 @@ public final class McefBridge {
     static void keyRelease(String webPath, int keyCode, int scanCode, int modifiers) {
         Entry e = BROWSERS.get(webPath);
         if (e != null && e.browser != null) {
-            e.browser.sendKeyRelease(keyCode, scanCode, modifiers);
+            e.browser.sendKeyRelease(toWindowsVk(keyCode), scanCode, modifiers);
         }
     }
 
