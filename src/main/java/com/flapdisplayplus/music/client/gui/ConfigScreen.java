@@ -39,6 +39,14 @@ public class ConfigScreen extends Screen {
     /** 说明文字：由 TextFlow 累加排版 */
     private final TextFlow flow = new TextFlow();
 
+    /**
+     * 文本列相对屏幕中心的横向偏移（render 时换算成绝对 left）。
+     * 默认 -150：为 300 宽的输入框/循环按钮（如网易云设置、媒体性能）预留整行；
+     * 内容只有 ~200px 宽的窄页（搜索/显示/红石/播放设置）改为 -100，让整列视觉居中，
+     * 否则整列偏左、右侧大片留白（用户反馈的排版问题）。
+     */
+    private int flowLeftOffset = -150;
+
     public ConfigScreen(ModContainer modContainer, Screen parent) {
         this(modContainer, parent, Page.HUB);
     }
@@ -171,7 +179,8 @@ public class ConfigScreen extends Screen {
     // ===================== 通用设置 =====================
     private void buildGeneral() {
         int cx = this.width / 2;
-        int left = cx - 150;
+        flowLeftOffset = -100;
+        int left = cx - 100;
 
         flow.h1("视频");
         addToggle(left, flow.y(), 70, Config.MEDIA_VIDEO_SOUND, "视频播放声音");
@@ -298,7 +307,8 @@ public class ConfigScreen extends Screen {
     // ===================== 显示设置 =====================
     private void buildDisplay() {
         int cx = this.width / 2;
-        int left = cx - 150;
+        flowLeftOffset = -100;
+        int left = cx - 100;
         int y = 48;
         addToggle(left, y, 70, com.flapdisplayplus.music.config.Config.SHOW_LYRIC_WHEN_PAUSED, "暂停时显示歌词"); y += 30;
         addToggle(left, y, 70, com.flapdisplayplus.music.config.Config.SHOW_PAUSE_TIME, "暂停时显示时间"); y += 30;

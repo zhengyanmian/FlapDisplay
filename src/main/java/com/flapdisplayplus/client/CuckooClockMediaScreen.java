@@ -95,9 +95,15 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         }
     }
 
-    /** 网格几何的唯一定义处（缩略图区高 48 + 名称 2 行） */
+    /**
+     * 网格几何的唯一定义处（缩略图区高 48 + 名称 2 行）。
+     * 【2026-09-27 排版】网格在窗口内水平居中（此前贴左 left+10，右侧空出 62px）。
+     */
     private Grid grid() {
-        return new Grid(this.guiLeft + 10, this.guiTop + 56, 92, 70, 3, 6, 8);
+        int cols = 3, cellW = 92, gapX = 6;
+        int gridW = cols * cellW + (cols - 1) * gapX;
+        int left = this.guiLeft + (this.windowWidth - gridW) / 2;
+        return new Grid(left, this.guiTop + 56, cellW, 70, cols, gapX, 8);
     }
 
     public CuckooClockMediaScreen(BlockPos cuckooPos) {
@@ -279,8 +285,11 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         // 图片模式为默认（无选项卡）；点击某选项卡切换，再点一次取消回图片。
         // 打开界面时全部灰色，当前类型在状态行显示。
         typeTabs = new Button[TYPES.length];
+        // 【2026-09-27 排版】选项卡整组居中（此前贴左 left+10，右侧空出 88px）
+        int tabSpan = (TYPES.length - 1) * 66 + 64;
+        int tabsLeft = this.guiLeft + (this.windowWidth - tabSpan) / 2;
         for (int i = 0; i < TYPES.length; i++) {
-            FdpButton b = makeTabButton(this.guiLeft + 10 + i * 66, top + 18, 64, 20,
+            FdpButton b = makeTabButton(tabsLeft + i * 66, top + 18, 64, 20,
                     TYPES[i], TYPE_LABELS[i]);
             typeTabs[i] = b;
             this.addRenderableWidget(b);
