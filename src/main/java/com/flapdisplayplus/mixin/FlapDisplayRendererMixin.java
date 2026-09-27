@@ -67,6 +67,14 @@ public abstract class FlapDisplayRendererMixin {
         if (be == null) {
             return;
         }
+        // ===== Create 原版规则：翻牌显示器必须收到转速（动力）才显示内容 =====
+        // FlapDisplayBlockEntity 继承 KineticBlockEntity（javap 已验证 getSpeed 为 public float），
+        // 客户端有转速同步。无转速时不渲染媒体、也不调 getVideoFrame：
+        //   - 渲染访问断流 → MediaManager 的孤儿回收（5 秒）自动硬停视频与声音；
+        //   - 恢复供能后 getVideoFrame 重建播放器从头播放（与原版「断电停显」行为一致）。
+        if (Math.abs(be.getSpeed()) < 0.01f) {
+            return;
+        }
         long n = RENDER_LOG_THROTTLE.incrementAndGet();
         // 入口诊断（每 100 帧，debug 级别）：判断 handler 是否真的被调用
         if (n % 100 == 0) {
