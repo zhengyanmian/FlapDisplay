@@ -16,6 +16,7 @@ package com.flapdisplayplus.client;
 
 import com.flapdisplayplus.FlapDisplayPlus;
 import com.flapdisplayplus.api.CuckooClockMedia;
+import com.flapdisplayplus.client.web.WebScreenManager;
 import com.flapdisplayplus.music.MusicNetIntegration;
 import com.flapdisplayplus.net.MediaResolverManager;
 import com.flapdisplayplus.net.NetMediaManager;
@@ -167,6 +168,20 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
 
         String name() {
             if (url != null) {
+                // 网页条目：显示主机名
+                if (WebScreenManager.isWebPath(url)) {
+                    String s = url.substring("web://".length());
+                    int scheme = s.indexOf("://");
+                    if (scheme >= 0) {
+                        s = s.substring(scheme + 3);
+                    }
+                    int q = s.indexOf('?');
+                    if (q > 0) {
+                        s = s.substring(0, q);
+                    }
+                    int slash = s.indexOf('/');
+                    return slash > 0 ? s.substring(0, slash) : s;
+                }
                 // 有解析结果用标题，否则退化为链接尾段
                 NetMediaManager.Task t = NetMediaManager.get(url);
                 if (t != null && t.resolved != null && t.resolved.title != null
@@ -245,6 +260,30 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         // 幂等：已有任务不会重复下载
         NetMediaManager.acquire(url);
         status = "已添加，正在解析/下载…";
+    }
+
+    /** 添加网页（web:// 前缀路由到 MCEF 离屏浏览器；可选前置，未装时仅提示不报错） */
+    private void addWebUrl(String raw) {
+        String u = raw == null ? "" : raw.trim();
+        if (u.isEmpty()) {
+            status = "请先输入网页地址";
+            return;
+        }
+        if (!u.startsWith("http://") && !u.startsWith("https://")) {
+            status = "网页地址需以 http(s):// 开头";
+            return;
+        }
+        String key = "web://" + u;
+        if (netItems.contains(key)) {
+            status = "该网页已在列表中";
+            return;
+        }
+        netItems.add(key);
+        rebuildEntries();
+        selectedPath = key;
+        status = WebScreenManager.isMcefLoaded()
+                ? "已添加网页，正在加载…（选中后再点一次可打开预览交互）"
+                : "已添加网页。未安装 MCEF 前置，翻牌无法显示（Modrinth 搜索 mcef）";
     }
 
     /** 获取 flap-media 目录（游戏根目录下，不存在则创建） */
@@ -356,12 +395,19 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
                 Component.literal("✖ 关闭"), b -> this.onClose()));
 
         // ===== 第三行：网络链接输入 =====
-        // 直链（图床/对象存储/CDN）直接下载；站点解析功能已移除，只支持 http(s) 直链。
+        // 直链（图床/对象存储/CDN）直接下载；「网页」按钮走 MCEF 离屏浏览器（可选前置）。
         urlBox = new net.minecraft.client.gui.components.EditBox(
-                this.font, cx - 169, row3, 232, 20, Component.literal(""));
+                this.font, cx - 169, row3, 172, 20, Component.literal(""));
         urlBox.setMaxLength(2048);
-        urlBox.setHint(Component.literal("§7粘贴 http(s) 图片/视频链接"));
+        urlBox.setHint(Component.literal("§7粘贴 http(s) 链接或网址"));
         this.addRenderableWidget(urlBox);
+
+        this.addRenderableWidget(FdpButton.create(cx + 9, row3, 56, 20,
+                Component.literal("网页"), b -> {
+                    String v = urlBox.getValue();
+                    addWebUrl(v);
+                    urlBox.setValue("");
+                }));
 
         this.addRenderableWidget(FdpButton.create(cx + 69, row3, 96, 20,
                 Component.literal("添加链接"), b -> {
@@ -421,7 +467,9 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             return;
         }
         String pickedName;
-        if (MediaResolverManager.isNetworkInput(selectedPath)) {
+        if (WebScreenManager.isWebPath(selectedPath)) {
+            pickedName = "网页";
+        } else if (MediaResolverManager.isNetworkInput(selectedPath)) {
             pickedName = pickedNetName(selectedPath);
         } else {
             pickedName = new File(selectedPath).getName();
@@ -508,6 +556,10 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
                 int dh = Math.max(1, (int) (ih * ratio));
                 graphics.blit(frame, x + 4 + (cellW - 8 - dw) / 2, y + 2 + (44 - dh) / 2,
                         dw, dh, 0, 0, iw, ih, iw, ih);
+            } else if (WebScreenManager.isWebPath(path)) {
+                // 网页条目：纹理就绪前显示状态提示（就绪后走上面的 blit 分支实时镜像）
+                String s = WebScreenManager.isMcefLoaded() ? "网页加载中…" : "需安装 MCEF";
+                graphics.drawCenteredString(this.font, s, x + cellW / 2, y + 18, FdpWidgets.TEXT_DIM);
             } else if (e.isNet()) {
                 // 网络媒体：下载/解析未就绪时显示进度，而不是无意义的省略号
                 NetMediaManager.Task t = NetMediaManager.get(e.url);
@@ -599,8 +651,14 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
                 if (idx >= entries.size()) break;
                 if (g.hit(i, mouseX, mouseY)) {
                     Entry e = entries.get(idx);
+                    // 网页条目：再次点击已选中的网页 → 打开全屏预览（可点击/打字/滚动）
+                    if (WebScreenManager.isWebPath(e.key()) && e.key().equals(selectedPath)) {
+                        WebScreenManager.openPreview(e.key());
+                        return true;
+                    }
                     selectedPath = e.key();
-                    status = "已选择：" + e.name();
+                    status = "已选择：" + e.name()
+                            + (WebScreenManager.isWebPath(e.key()) ? "（再点一次可打开预览交互）" : "");
                     return true;
                 }
             }

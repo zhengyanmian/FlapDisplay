@@ -83,6 +83,12 @@ dependencies {
         logger.lifecycle("[deps] 未找到 libs/netmusic.jar —— Net Music 软联动将被跳过（其余功能不受影响）")
     }
 
+    // ===== MCEF（网页显示的可选前置，同 Net Music 软联动模式）=====
+    // 仅编译期引用（client/web/McefBridge）；运行时由用户自装（Modrinth: mcef）。
+    // 未安装时 WebScreenManager 的 isMcefLoaded() 守卫会阻止 McefBridge 类被加载，
+    // 网页媒体源自动失效，其余功能不受影响。MCEF jar 绝不能嵌入（含 CEF 原生库）。
+    compileOnly("maven.modrinth:mcef:2.1.6-1.21.1")
+
     // ===== 以下第三方库统一走 Maven 坐标（原先是 libs/*.jar 本地文件）=====
     // 依赖来源改为声明式，仓库里不再需要提交第三方二进制，clone 后可直接编译。
     //

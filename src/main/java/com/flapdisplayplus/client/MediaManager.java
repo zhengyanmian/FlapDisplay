@@ -14,6 +14,7 @@
 package com.flapdisplayplus.client;
 
 import com.flapdisplayplus.FlapDisplayPlus;
+import com.flapdisplayplus.client.web.WebScreenManager;
 import com.flapdisplayplus.config.Config;
 import com.flapdisplayplus.net.MediaResolverManager;
 import com.flapdisplayplus.net.NetMediaManager;
@@ -108,6 +109,11 @@ public final class MediaManager {
         if (path == null) {
             return;
         }
+        // 网页媒体：关闭对应离屏浏览器（stopVideoIfUnreferenced 的回收链路会走到这里）
+        if (WebScreenManager.isWebPath(path)) {
+            WebScreenManager.stop(path);
+            return;
+        }
         VideoPlayer vp = VIDEOS.remove(path);
         if (vp != null) {
             vp.stop();
@@ -117,6 +123,8 @@ public final class MediaManager {
 
     /** 停止并移除全部视频播放器（退出世界 / 断线 / 资源重载时调用，防止音频线程残留） */
     public static void stopAllVideos() {
+        // 网页浏览器的生命周期与视频一致：退出世界时全部关闭（Chromium 吃内存，不能残留）
+        WebScreenManager.stopAll();
         if (VIDEOS.isEmpty()) {
             return;
         }
@@ -139,6 +147,8 @@ public final class MediaManager {
         // FFmpeg 缺失时自动下载一次（幂等；探测走缓存，每刻调用开销可忽略）
         FfmpegAutoDownloader.ensureDownloaded();
         sweepRemovedDisplays();
+        // 网页纹理帧上传（渲染线程；无网页媒体时空转）
+        WebScreenManager.tick();
         if (VIDEOS.isEmpty()) {
             return;
         }
@@ -254,14 +264,20 @@ public final class MediaManager {
         stopVideo(local);
     }
 
-    /** 图片宽度（未加载返回 0） */
+    /** 图片宽度（未加载返回 0）；网页媒体返回浏览器渲染宽 */
     public static int getTextureWidth(String path) {
+        if (WebScreenManager.isWebPath(path)) {
+            return WebScreenManager.getWidth(path);
+        }
         int[] d = DIMENSIONS.get(path);
         return d == null ? 0 : d[0];
     }
 
-    /** 图片高度（未加载返回 0） */
+    /** 图片高度（未加载返回 0）；网页媒体返回浏览器渲染高 */
     public static int getTextureHeight(String path) {
+        if (WebScreenManager.isWebPath(path)) {
+            return WebScreenManager.getHeight(path);
+        }
         int[] d = DIMENSIONS.get(path);
         return d == null ? 0 : d[1];
     }
@@ -342,6 +358,10 @@ public final class MediaManager {
         if (path == null || path.isEmpty()) {
             return null;
         }
+        // 网页媒体：不走本地文件缓存，直接取浏览器帧纹理（首次调用创建浏览器）
+        if (WebScreenManager.isWebPath(path)) {
+            return WebScreenManager.getFrame(path);
+        }
         String local = localPath(path);
         if (local == null) {
             return null;
@@ -416,6 +436,10 @@ public final class MediaManager {
     public static ResourceLocation getVideoFrame(String path) {
         if (path == null || path.isEmpty()) {
             return null;
+        }
+        // 网页媒体：取离屏浏览器的实时帧纹理（渲染访问同时充当「仍在显示」的心跳）
+        if (WebScreenManager.isWebPath(path)) {
+            return WebScreenManager.getFrame(path);
         }
         String local = localPath(path);
         if (local == null) {

@@ -50,6 +50,14 @@ Net Music integration for album covers, titles and lyrics.
     ordering="AFTER"
     side="BOTH"
 
+# ===== 可选前置：MCEF（网页显示；未安装时网页媒体源自动关闭）=====
+[[dependencies.flapdisplayplus]]
+    modId="mcef"
+    type="optional"
+    versionRange="[2.1.6,)"
+    ordering="AFTER"
+    side="CLIENT"
+
 # ===== Mixin 配置 =====
 # 核心 mixin（Create 翻牌渲染 + 布谷鸟时钟 + 显示链接器）
 [[mixins]]
