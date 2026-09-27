@@ -28,10 +28,14 @@ import org.jcodec.common.DemuxerTrack;
 import org.jcodec.common.io.NIOUtils;
 import org.jcodec.common.io.SeekableByteChannel;
 import org.jcodec.common.model.AudioBuffer;
+import org.jcodec.common.model.ColorSpace;
 import org.jcodec.common.model.Packet;
 import org.jcodec.common.model.Picture;
 import org.jcodec.containers.mp4.demuxer.MP4Demuxer;
 import org.jcodec.scale.AWTUtil;
+import org.jcodec.scale.ColorUtil;
+import org.jcodec.scale.RgbToBgr;
+import org.jcodec.scale.Transform;
 
 import com.flapdisplayplus.config.Config;
 
@@ -145,6 +149,18 @@ public final class VideoPlayer {
     private volatile double frameDurMs = 33.33;
     private volatile int width;
     private volatile int height;
+
+    // ===== 【2026-09-27】零分配转换管线（仅视频线程访问，无需同步）=====
+    // 旧路径每帧分配：AWTUtil.toBufferedImage 的 BufferedImage(720p≈2.7MB) + getRGB 的
+    // int[](≈3.7MB) + 降采样 Picture —— 25fps 时 GC 垃圾 ≈150MB/s，G1 回收造成的
+    // 停顿正是长视频「一顿一顿」的元凶之一。
+    // 新路径：ColorUtil.getTransform(YUV→RGB) + RgbToBgr（与 AWTUtil.toBufferedImage
+    // 内部完全同源，已离线验证逐像素 0 差异），全部目标缓冲预分配复用，
+    // 每帧 0 堆分配。crop 非空的罕见封装退回旧路径兜底。
+    private Picture scaledBuf;
+    private Picture bgrBuf;
+    private Transform colorTransform;
+    private final RgbToBgr bgrSwap = new RgbToBgr();
 
     VideoPlayer(String path, File file, boolean soundOn) {
         this(path, file, soundOn, null);
@@ -430,10 +446,11 @@ public final class VideoPlayer {
     // 这样主线程每帧的固定开销从 O(w×h) 降到 O(1)。
 
     /**
-     * 解码并填充一帧到后台缓冲（**视频线程**执行）：
-     * 先按 Config 的纹理上限在【YUV 平面层】把 Picture 降采样到目标尺寸，
-     * 再 AWTUtil 转 BufferedImage，然后逐像素写进轮转缓冲。
-     * 从不生成原生分辨率（如 1080p≈8MB）的 BufferedImage，消除每帧巨量分配导致的 GC 卡顿。
+     * 解码并填充一帧到后台缓冲（**视频线程**执行）。
+     * 【2026-09-27 重写为零分配管线】先按 Config 的纹理上限在【YUV 平面层】降采样
+     * （复用缓冲），再用 jcodec Transform 转 BGR（复用缓冲），最后直接把 BGR 字节
+     * 打包写进轮转的 NativeImage —— 全程 0 堆分配（首帧打包除外）。
+     * 转换链路与 AWTUtil.toBufferedImage 内部完全同源，已在真实视频上验证逐像素 0 差异。
      */
     private void uploadFrame(Picture pic) {
         int cap = Config.MEDIA_VIDEO_MAX_DIM.get();
@@ -445,9 +462,55 @@ public final class VideoPlayer {
             tw = Math.max(1, (int) (sw * r));
             th = Math.max(1, (int) (sh * r));
         }
-        BufferedImage bi;
+        // crop 非空的封装（极少见）退回旧 AWTUtil 路径（它自带 crop 处理）
+        if (pic.getCrop() != null) {
+            legacyUpload(pic, tw, th);
+            return;
+        }
+        Picture src = pic;
         if (tw != sw || th != sh) {
-            // 解码即降采样：在 YUV 平面层完成，避免原生分辨率大缓冲
+            if (scaledBuf == null || scaledBuf.getWidth() != tw || scaledBuf.getHeight() != th) {
+                scaledBuf = Picture.create(tw, th, pic.getColor());
+            }
+            boxAvgInto(pic, scaledBuf);
+            src = scaledBuf;
+        }
+        if (bgrBuf == null || bgrBuf.getWidth() != tw || bgrBuf.getHeight() != th) {
+            bgrBuf = Picture.create(tw, th, ColorSpace.BGR);
+        }
+        if (colorTransform == null) {
+            colorTransform = ColorUtil.getTransform(pic.getColor(), ColorSpace.RGB);
+        }
+        colorTransform.transform(src, bgrBuf);
+        bgrSwap.transform(bgrBuf, bgrBuf);
+        byte[] px = bgrBuf.getPlaneData(0);
+
+        // 尚未初始化：把首帧交给渲染线程去建纹理（纹理注册必须是渲染线程）
+        if (nbuf == 0) {
+            if (initArgb == null && staged < 0) {
+                int[] a = new int[tw * th];
+                packBgr(px, a, tw, th);
+                initW = tw;
+                initH = th;
+                initArgb = a;
+            }
+            return;
+        }
+        // 上一帧还没被渲染线程取走 → 直接丢这一帧。
+        // 这是「防音画越拖越远」的关键：宁可丢帧也不排队，排队会让画面永久滞后于声音。
+        if (staged >= 0) {
+            return;
+        }
+        // 轮转：后台要写的那一块永远不是渲染线程正在读的 front（3 缓冲保证）
+        int b = (front + 1) % NBUFS;
+        fillFromBgr(imgs[b], px, tw, th);
+        staged = b;
+    }
+
+    /** 旧路径（crop 封装兜底）：AWTUtil 转 BufferedImage 再逐像素填充 */
+    private void legacyUpload(Picture pic, int tw, int th) {
+        BufferedImage bi;
+        if (tw != pic.getWidth() || th != pic.getHeight()) {
             try {
                 bi = AWTUtil.toBufferedImage(scalePictureYuv(pic, tw, th));
             } catch (Throwable t) {
@@ -464,8 +527,6 @@ public final class VideoPlayer {
         int bw = bi.getWidth();
         int bh = bi.getHeight();
         int[] argb = bi.getRGB(0, 0, bw, bh, null, 0, bw);
-
-        // 尚未初始化：把首帧交给渲染线程去建纹理（纹理注册必须是渲染线程）
         if (nbuf == 0) {
             if (initArgb == null && staged < 0) {
                 initW = bw;
@@ -474,15 +535,45 @@ public final class VideoPlayer {
             }
             return;
         }
-        // 上一帧还没被渲染线程取走 → 直接丢这一帧。
-        // 这是「防音画越拖越远」的关键：宁可丢帧也不排队，排队会让画面永久滞后于声音。
         if (staged >= 0) {
             return;
         }
-        // 轮转：后台要写的那一块永远不是渲染线程正在读的 front（3 缓冲保证）
         int b = (front + 1) % NBUFS;
         fillPixels(imgs[b], argb, bw, bh);
         staged = b;
+    }
+
+    /** BGR 平面字节（jcodec -128 偏置）→ NativeImage 打包格式，零中间分配 */
+    private static void fillFromBgr(NativeImage img, byte[] bgr, int w, int h) {
+        for (int y = 0; y < h; y++) {
+            int row = y * w;
+            int o = row * 3;
+            for (int x = 0; x < w; x++, o += 3) {
+                int b = (bgr[o] + 128) & 0xFF;
+                int g = (bgr[o + 1] + 128) & 0xFF;
+                int r = (bgr[o + 2] + 128) & 0xFF;
+                img.setPixelRGBA(x, y, 0xFF000000 | (b << 16) | (g << 8) | r);
+            }
+        }
+    }
+
+    /** BGR 平面字节 → (A<<24)|(B<<16)|(G<<8)|R 打包数组（首帧给渲染线程用） */
+    private static void packBgr(byte[] bgr, int[] out, int w, int h) {
+        for (int i = 0, o = 0; i < w * h; i++, o += 3) {
+            int b = (bgr[o] + 128) & 0xFF;
+            int g = (bgr[o + 1] + 128) & 0xFF;
+            int r = (bgr[o + 2] + 128) & 0xFF;
+            out[i] = 0xFF000000 | (b << 16) | (g << 8) | r;
+        }
+    }
+
+    /** 在 YUV 平面层做盒式降采样，写入预分配的复用目标（无新分配） */
+    private static void boxAvgInto(Picture src, Picture dst) {
+        int planes = Math.min(3, Math.min(src.getData().length, dst.getData().length));
+        for (int plane = 0; plane < planes; plane++) {
+            boxAvg(src.getPlaneData(plane), src.getPlaneWidth(plane), src.getPlaneHeight(plane),
+                    dst.getPlaneData(plane), dst.getPlaneWidth(plane), dst.getPlaneHeight(plane));
+        }
     }
 
     /** 渲染线程：把后台填好的缓冲提升为当前帧（只做 upload，不做逐像素） */
@@ -507,7 +598,8 @@ public final class VideoPlayer {
                 // LINEAR 过滤：纹理被拉伸到翻牌显示面时平滑插值，消除块状模糊。
                 texs[i].setFilter(true, false);
             }
-            fillPixels(imgs[0], a, w, h);
+            // 首帧数据已是 (A<<24)|(B<<16)|(G<<8)|R 打包格式（零分配管线产出），直接写入
+            fillPacked(imgs[0], a, w, h);
             texs[0].upload();
             nbuf = NBUFS;
             front = 0;
@@ -549,6 +641,16 @@ public final class VideoPlayer {
                 int g = (c >>> 8) & 0xFF;
                 int b = c & 0xFF;
                 img.setPixelRGBA(x, y, (a << 24) | (b << 16) | (g << 8) | r);
+            }
+        }
+    }
+
+    /** 写入已按 (A<<24)|(B<<16)|(G<<8)|R 打包好的像素（零分配管线首帧用） */
+    private static void fillPacked(NativeImage img, int[] packed, int w, int h) {
+        for (int y = 0; y < h; y++) {
+            int row = y * w;
+            for (int x = 0; x < w; x++) {
+                img.setPixelRGBA(x, y, packed[row + x]);
             }
         }
     }

@@ -110,12 +110,27 @@ public class NetEaseSearchSource implements IMusicSearchSource {
                 // 因此这里回填纯数字 ID，由原版 MusicListManage.get163Song(id) 解析真实
                 // 播放地址与歌名，完整复用原版制作链路。
                 String url = String.valueOf(id);
-                list.add(new SearchResult(getPlatformId(), String.valueOf(id), title, artist, durationSec, url, ""));
+                list.add(new SearchResult(getPlatformId(), String.valueOf(id), title, artist, durationSec, url, "", isVip(song)));
             }
         } catch (Exception e) {
             LOGGER.error("[搜索|网易云] 解析异常", e);
         }
         return list;
+    }
+
+    /**
+     * VIP 判定：fee 字段 0=免费 1=VIP 4=购买专辑 8=低音质免费可播。
+     * 只有 fee==1 是真正的「VIP 才能完整播放」；老接口没有顶层 fee 时尝试 privilege 层。
+     * （已在真实接口上验证：搜索周杰伦返回的歌曲含 fee=1（布拉格广场等 VIP 曲目）与 fee=8。）
+     */
+    private static boolean isVip(JsonObject song) {
+        if (song.has("fee")) {
+            return song.get("fee").getAsInt() == 1;
+        }
+        if (song.has("privilege") && song.getAsJsonObject("privilege").has("fee")) {
+            return song.getAsJsonObject("privilege").get("fee").getAsInt() == 1;
+        }
+        return false;
     }
 
     private String extractArtist(JsonObject song) {

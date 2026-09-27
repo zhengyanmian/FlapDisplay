@@ -9,6 +9,7 @@ package com.flapdisplayplus.music.search;
  * @param artist       歌手名（多个用 / 分隔）
  * @param durationSec  时长（秒）
  * @param cdUrl        写入 CD 的 URL（可为平台伪协议，如 qqmusic:{songmid}，播放时由 resolver 实时解析）
+ * @param vip          是否 VIP 歌曲（用于搜索列表加红字标识）
  */
 public record SearchResult(
         String platform,
@@ -17,8 +18,14 @@ public record SearchResult(
         String artist,
         int durationSec,
         String cdUrl,
-        String mediaMid
+        String mediaMid,
+        boolean vip
 ) {
+    /** 兼容旧调用：未携带 VIP 信息的构造（默认非 VIP） */
+    public SearchResult(String platform, String songId, String title, String artist,
+                        int durationSec, String cdUrl, String mediaMid) {
+        this(platform, songId, title, artist, durationSec, cdUrl, mediaMid, false);
+    }
     /** 写入刻录机名字框的显示名：歌名 - 歌手 */
     public String displayName() {
         String artistText = (artist == null || artist.isBlank()) ? "未知歌手" : artist;
