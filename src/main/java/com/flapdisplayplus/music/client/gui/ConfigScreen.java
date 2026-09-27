@@ -271,7 +271,7 @@ public class ConfigScreen extends Screen {
         addPageButton("网易云设置", Page.NETEASE, cx, y); y += gap;
         addPageButton("搜索设置", Page.SEARCH, cx, y); y += gap;
         this.addRenderableWidget(FdpButton.create(cx - w / 2, y, w, 20,
-                Component.literal("QQ 登录"), b ->
+                Component.literal("QQ音乐设置（扫码登录）"), b ->
                         Minecraft.getInstance().setScreen(new QqLoginScreen(this))));
         y += gap;
         backToHubButton();
@@ -405,21 +405,23 @@ public class ConfigScreen extends Screen {
         flow.skip(10);
 
         // 每页数量（翻页模式生效）
+        // 【2026-09-27 修复排版】此前 statText 宽 120 且文字居中，"每页 N 首"压到 -5 按钮。
+        // 现在三段各归其位：-5（left..+50）｜数值文字（+56 居中，宽 60）｜+5（+120..+180）。
         int sizeY = flow.y();
-        this.addRenderableWidget(FdpButton.create(left, sizeY, 60, 20,
+        this.addRenderableWidget(FdpButton.create(left, sizeY, 50, 20,
                 Component.literal("-5"), b -> {
                     int v = Math.max(5, com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.get() - 5);
                     com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.set(v);
                     FdpWidgets.save();
                 }));
-        this.addRenderableWidget(FdpButton.create(left + 120, sizeY, 60, 20,
+        this.addRenderableWidget(FdpWidgets.statText(left + 56, sizeY + 4, 60,
+                () -> "每页 " + com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.get() + " 首"));
+        this.addRenderableWidget(FdpButton.create(left + 120, sizeY, 50, 20,
                 Component.literal("+5"), b -> {
                     int v = Math.min(50, com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.get() + 5);
                     com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.set(v);
                     FdpWidgets.save();
                 }));
-        this.addRenderableWidget(FdpWidgets.statText(left, sizeY + 4, 120,
-                () -> "每页 " + com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.get() + " 首"));
         flow.skip(30);
 
         flow.h1("【搜索结果制作唱片说明】");

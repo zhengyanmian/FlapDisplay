@@ -62,7 +62,10 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
     private void netmusicdisplay$addSearchButton(CallbackInfo ci) {
         netmusicdisplay$raiseMaxLength("init");
 
-        // 搜索按钮：放在「制作唱片」下方，留出空间给红字提示（tips 在制作唱片行下方显示）
+        // 搜索按钮：放在红字提示区**下方**。
+        // 原版布局（javap 核对）：制作唱片行 y=35..53，红字 tips 画在 y=57（drawWordWrap，
+        // 最多两行到 y=75），玩家背包槽位从 y=94 开始 → 按钮只能放 75..93 这个空档。
+        // 【2026-09-27 修复】此前放 y=62，正好压住红字提示（用户截图反馈的排版问题）。
         //
         // 【踩坑记录，勿改回 translatable】这里曾经写成
         //   Component.translatable("netmusicdisplay.gui.search.open")
@@ -74,7 +77,7 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
         Button button = Button.builder(
                         Component.literal("搜索"),
                         btn -> Minecraft.getInstance().setScreen(new MusicSearchScreen(this)))
-                .bounds(this.getGuiLeft() + 7, this.getGuiTop() + 62, 50, 18)
+                .bounds(this.getGuiLeft() + 7, this.getGuiTop() + 75, 50, 17)
                 .build();
         this.addRenderableWidget(button);
 
@@ -85,7 +88,7 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                             ActivePlatform.toggle();
                             btn.setMessage(Component.literal(ActivePlatform.isQq() ? "QQ音乐" : "网易云"));
                         })
-                .bounds(this.getGuiLeft() + 60, this.getGuiTop() + 62, 58, 18)
+                .bounds(this.getGuiLeft() + 60, this.getGuiTop() + 75, 58, 17)
                 .build();
         this.addRenderableWidget(platformToggle);
     }
@@ -322,10 +325,11 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
             }
         } else if (netmusicdisplay$looksTruncated(mid) && healed == null) {
             // 缓存里也没有 → 大概率是手工输入的残缺值，明确提示
+            // （文案控制在 135px 宽两行以内：tips 区 y=57..75，再长会压到下方按钮）
             MusicNetIntegration.LOGGER.error(
                     "[刻录机] mid 过短（{} 位）'{}' 且缓存中查不到完整值，疑似手工输入的残缺 ID",
                     mid.length(), mid);
-            this.tips = Component.literal("QQ ID 疑似不完整（仅 " + mid.length() + " 位），请用「搜索」重新选歌");
+            this.tips = Component.literal("QQ ID 不完整，请用「搜索」选歌");
             return;
         }
 

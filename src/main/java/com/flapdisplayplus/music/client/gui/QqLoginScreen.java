@@ -33,6 +33,8 @@ public class QqLoginScreen extends Screen {
 
     private final Screen parent;
     private final QrCodeRenderer qr = new QrCodeRenderer();
+    /** true = 即使已有登录态也强制走扫码流程（「扫码登录其他账号」入口） */
+    private final boolean forceQr;
     private QqLoginService.LoginState state = QqLoginService.LoginState.IDLE;
     private String statusText = "";
     private boolean polling = false;
@@ -40,8 +42,13 @@ public class QqLoginScreen extends Screen {
     private boolean loggedIn = false;
 
     public QqLoginScreen(Screen parent) {
-        super(Component.literal("QQ音乐登录"));
+        this(parent, false);
+    }
+
+    public QqLoginScreen(Screen parent, boolean forceQr) {
+        super(Component.literal("QQ音乐设置"));
         this.parent = parent;
+        this.forceQr = forceQr;
     }
 
     @Override
@@ -51,11 +58,14 @@ public class QqLoginScreen extends Screen {
         this.addRenderableWidget(FdpButton.create(cx - 50, this.height - 30, 100, 20,
                 Component.literal("返回"), b -> this.onClose()));
 
-        // 已登录：展示登录态 + 注销，不再展示二维码
-        if (QqCredentialManager.hasValidCredential()) {
+        // 已登录：展示登录态 + 换号扫码 / 注销，不再展示二维码
+        if (QqCredentialManager.hasValidCredential() && !forceQr) {
             loggedIn = true;
             statusText = "已登录（musicid=" + QqCredentialManager.getMusicId() + "）";
-            this.addRenderableWidget(FdpButton.create(cx - 90, this.height / 2 + 20, 180, 20,
+            this.addRenderableWidget(FdpButton.create(cx - 90, this.height / 2 - 2, 180, 20,
+                    Component.literal("扫码登录其他账号"), b ->
+                            Minecraft.getInstance().setScreen(new QqLoginScreen(parent, true))));
+            this.addRenderableWidget(FdpButton.create(cx - 90, this.height / 2 + 26, 180, 20,
                     Component.literal("注销并退出登录"), b -> doLogout()));
         } else {
             loggedIn = false;
@@ -148,12 +158,12 @@ public class QqLoginScreen extends Screen {
         int cx = this.width / 2;
         FdpWidgets.title(graphics, this.title.getString(), cx, 20);
 
-        // 已登录：只画登录态面板
+        // 已登录：只画登录态面板（文字与下方两个按钮的 y 对齐成组）
         if (loggedIn) {
-            graphics.drawCenteredString(this.font, "QQ 音乐已登录", cx, this.height / 2 - 30, COLOR_OK);
-            graphics.drawCenteredString(this.font, statusText, cx, this.height / 2 - 8, 0xFFC8C8C8);
-            graphics.drawCenteredString(this.font, "点击「注销并退出登录」可清除登录状态",
-                    cx, this.height / 2 + 48, FdpWidgets.TEXT_DIM);
+            graphics.drawCenteredString(this.font, "QQ 音乐已登录", cx, this.height / 2 - 44, COLOR_OK);
+            graphics.drawCenteredString(this.font, statusText, cx, this.height / 2 - 26, 0xFFC8C8C8);
+            graphics.drawCenteredString(this.font, "登录后可刻录/播放 VIP 歌曲",
+                    cx, this.height / 2 + 54, FdpWidgets.TEXT_DIM);
             return;
         }
 
