@@ -867,13 +867,18 @@ public final class VideoPlayer {
 
                 Packet pkt;
                 while (!stopped && (pkt = track.nextFrame()) != null) {
-                    if (paused) {
+                    // 菜单暂停：真正挂起 —— 必须是 while 循环而非单次 wait(500)。
+                    // 旧写法 wait 超时后【不等 paused 变 false 就继续解码写包】，
+                    // 暂停期间音频线被反复喂数据（若线是运行态则直接出声）。
+                    while (paused && !stopped) {
                         synchronized (pauseLock) {
-                            try {
-                                pauseLock.wait(500);
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                return;
+                            if (paused && !stopped) {
+                                try {
+                                    pauseLock.wait(500);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    return;
+                                }
                             }
                         }
                     }
@@ -911,8 +916,10 @@ public final class VideoPlayer {
                     ensureLineOpen(fmt);
                     SourceDataLine l = line;
                     if (l != null) {
-                        if (stopped) {
-                            break; // stop() 后绝不再写入（防声音复活）
+                        // stop()/暂停期间绝不写入：写进已停的线只是缓存，恢复时会先播出
+                        // 这批过期数据（爆音/复活感）；写进刚被 stop 的运行态线同理。
+                        if (stopped || paused) {
+                            continue;
                         }
                         l.write(pcm, 0, pcm.length);
                     }
@@ -946,9 +953,13 @@ public final class VideoPlayer {
         }
     }
 
-    /** 打开/复用 SourceDataLine（按解码出的 PCM 格式）。stop() 后拒绝打开 —— 这是「声音复活」的封堵点 */
+    /**
+     * 打开/复用 SourceDataLine（按解码出的 PCM 格式）。stop()/暂停期间拒绝打开或启动 ——
+     * 「声音复活」与「暂停期间出声」的共同封堵点：暂停时打开的线保持 stopped，
+     * 由 setMenuPaused(false) 统一 start。
+     */
     private void ensureLineOpen(AudioFormat jfmt) {
-        if (stopped || line != null || jfmt == null) {
+        if (stopped || paused || line != null || jfmt == null) {
             return;
         }
         try {
@@ -969,8 +980,10 @@ public final class VideoPlayer {
             synchronized (this) {
                 line = l;
             }
-            l.start();
             lineBaseMs = l.getMicrosecondPosition() / 1000;
+            if (!paused) {
+                l.start();
+            }
             FlapDisplayPlus.LOGGER.info("[VideoPlayer] 音频开启 {}Hz/{}ch: {}", sr, ch, path);
         } catch (Throwable t) {
             FlapDisplayPlus.LOGGER.warn("[VideoPlayer] 音频线打开失败, 静音: {} {}", path, t.toString());
@@ -1028,7 +1041,14 @@ public final class VideoPlayer {
                 return;
             }
             long deadline = System.currentTimeMillis() + 5000;
-            while (!stopped && barrierWaiting > 0 && System.currentTimeMillis() < deadline) {
+            while (!stopped && barrierWaiting > 0) {
+                // 暂停期间超时截止时间持续顺延：视频线程不能在对方（被菜单暂停的
+                // 音频线程）没到场时单方重置从头播，否则恢复后音画错位
+                if (paused) {
+                    deadline = System.currentTimeMillis() + 5000;
+                } else if (System.currentTimeMillis() >= deadline) {
+                    break;
+                }
                 try {
                     barrierLock.wait(250);
                 } catch (InterruptedException e) {
@@ -1044,7 +1064,11 @@ public final class VideoPlayer {
         }
     }
 
-    /** 重置两个时钟基准，使下一轮从 0 开始。stop() 后禁止动作（防止把已关闭的线重新 start） */
+    /**
+     * 重置两个时钟基准，使下一轮从 0 开始。stop() 后禁止动作（防止把已关闭的线重新 start）。
+     * 暂停期间：只停线/清缓冲/重置时钟基准，【绝不 start】—— 否则 ESC 菜单里声音会自己复活；
+     * 恢复由 setMenuPaused(false) 统一 start，此时两线程都从头开始，时钟基准一致。
+     */
     private void resetClocks() {
         if (stopped) {
             return;
@@ -1054,7 +1078,9 @@ public final class VideoPlayer {
             try {
                 l.stop();
                 l.flush();
-                l.start();
+                if (!paused) {
+                    l.start();
+                }
             } catch (Throwable ignored) {
             }
             lineBaseMs = l.getMicrosecondPosition() / 1000;

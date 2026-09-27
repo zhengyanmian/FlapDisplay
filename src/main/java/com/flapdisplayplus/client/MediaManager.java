@@ -158,11 +158,16 @@ public final class MediaManager {
     /** 上一刻的游戏菜单暂停状态（用于边沿触发暂停/恢复） */
     private static boolean lastMenuPaused = false;
 
-    /** 游戏是否处于暂停菜单（ESC，单人/联机的暂停界面都会命中） */
+    /**
+     * 游戏是否处于暂停菜单（ESC）。
+     * 注意 mc.isPaused() 只在【单人】暂停时为 true；联机/局域网按 ESC 游戏本身不暂停，
+     * 该值为 false —— 必须同时判断当前打开的是不是 PauseScreen（单人/联机的 ESC 菜单是同一个类）。
+     */
     private static boolean isGameMenuPaused() {
         try {
             Minecraft mc = Minecraft.getInstance();
-            return mc != null && mc.isPaused();
+            return mc != null && (mc.isPaused()
+                    || mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen);
         } catch (Throwable t) {
             return false;
         }
