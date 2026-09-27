@@ -85,7 +85,7 @@ public final class WebScreenManager {
 
     // ===== 预览交互 =====
 
-    /** 打开网页预览界面（全屏 Screen：可点击 / 打字 / 滚动） */
+    /** 打开网页预览界面（全屏 Screen：可点击 / 打字 / 滚动；ESC 返回打开前的界面） */
     public static void openPreview(String webPath) {
         if (!isMcefLoaded()) {
             return;
@@ -94,7 +94,10 @@ public final class WebScreenManager {
         if (mc.screen instanceof WebScreen ws && ws.webPath.equals(webPath)) {
             return; // 已在该网页的预览中
         }
-        mc.setScreen(new WebScreen(webPath));
+        // 记住打开前的界面（若已在另一个网页的预览里，沿用更早的父界面）
+        net.minecraft.client.gui.screens.Screen parent =
+                mc.screen instanceof WebScreen ws2 ? ws2.parent : mc.screen;
+        mc.setScreen(new WebScreen(webPath, parent));
     }
 
     // ===== 输入转发（WebScreen 调用；坐标为浏览器像素坐标） =====

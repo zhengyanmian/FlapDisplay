@@ -34,7 +34,15 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.neoforged.neoforge.network.PacketDistributor;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -125,6 +133,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         }
         FlapDisplayPlus.LOGGER.info("[MediaGUI] 媒体界面已打开 clock={} 接口生效={} 当前媒体={}",
                 cuckooPos, ifaceOk, selectedPath.isEmpty() ? "(空)" : selectedPath);
+        loadNetItems();
         scanMediaFiles();
         // 打开时按当前内容类型显示提示（回显的类型/图片/模式会在上方按钮与网格显示）
         status = sourceTypeHint(sourceType);
@@ -259,6 +268,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             return;
         }
         netItems.add(url);
+        saveNetItems();
         rebuildEntries();
         selectedPath = url;
         // 幂等：已有任务不会重复下载
@@ -283,11 +293,51 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             return;
         }
         netItems.add(key);
+        saveNetItems();
         rebuildEntries();
         selectedPath = key;
         status = WebScreenManager.isMcefLoaded()
                 ? "已添加网页，正在加载…（选中后再点一次可打开预览交互）"
                 : "已添加网页。未安装 MCEF 前置，翻牌无法显示（Modrinth 搜索 mcef）";
+    }
+
+    /** 网络条目持久化文件（flap-media/net-list.txt，一行一条：链接或 web:// 网址） */
+    private File getNetListFile() {
+        return new File(getMediaDir(), "net-list.txt");
+    }
+
+    /** 启动时恢复上次添加的链接/网页（失败静默，视为空列表） */
+    private void loadNetItems() {
+        File f = getNetListFile();
+        if (!f.isFile()) {
+            return;
+        }
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                line = line.trim();
+                if (!line.isEmpty() && !netItems.contains(line)) {
+                    netItems.add(line);
+                }
+            }
+        } catch (IOException e) {
+            FlapDisplayPlus.LOGGER.warn("[MediaGUI] 读取 net-list.txt 失败（忽略）: {}", e.toString());
+        }
+    }
+
+    /** 新增链接/网页后立即落盘 */
+    private void saveNetItems() {
+        File f = getNetListFile();
+        try (BufferedWriter w = new BufferedWriter(
+                new OutputStreamWriter(new FileOutputStream(f, false), StandardCharsets.UTF_8))) {
+            for (String s : netItems) {
+                w.write(s);
+                w.newLine();
+            }
+        } catch (IOException e) {
+            FlapDisplayPlus.LOGGER.warn("[MediaGUI] 写入 net-list.txt 失败（忽略）: {}", e.toString());
+        }
     }
 
     /** 获取 flap-media 目录（游戏根目录下，不存在则创建） */

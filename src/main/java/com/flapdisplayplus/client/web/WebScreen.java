@@ -21,9 +21,33 @@ public class WebScreen extends Screen {
     /** 正在预览的网页媒体路径（"web://" + 网址） */
     final String webPath;
 
-    public WebScreen(String webPath) {
+    /** 打开预览前的界面（媒体选择界面），ESC 返回它而不是退出全部 */
+    final Screen parent;
+
+    public WebScreen(String webPath, Screen parent) {
         super(Component.literal("网页预览"));
         this.webPath = webPath;
+        this.parent = parent;
+    }
+
+    public WebScreen(String webPath) {
+        this(webPath, null);
+    }
+
+    /**
+     * 1.21 的 Screen.renderBackground 会对整帧套「菜单背景模糊」着色器，
+     * 把网页纹理一起糊掉 —— 网页预览必须跳过任何背景处理。
+     */
+    @Override
+    public void renderBackground(net.minecraft.client.gui.GuiGraphics graphics,
+                                 int mouseX, int mouseY, float partialTick) {
+        // 不做任何模糊/变暗：网页本身就是全屏内容
+    }
+
+    /** ESC 关闭预览 → 回到媒体选择界面（而非退出全部），选择状态得以保留 */
+    @Override
+    public void onClose() {
+        this.minecraft.setScreen(parent);
     }
 
     @Override
