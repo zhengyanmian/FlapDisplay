@@ -14,6 +14,9 @@ package com.flapdisplayplus.client;
 
 import com.flapdisplayplus.FlapDisplayPlus;
 
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
+
 import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -38,6 +41,20 @@ final class FfmpegAutoDownloader {
     private FfmpegAutoDownloader() {
     }
 
+    /** 在聊天框提示（下载线程发起，切回主线程执行；任何异常静默忽略，不影响下载） */
+    private static void chat(String text, ChatFormatting color) {
+        try {
+            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+            if (mc == null || mc.gui == null) {
+                return;
+            }
+            mc.execute(() -> mc.gui.getChat().addMessage(
+                    Component.literal("[翻牌万象] ").withStyle(ChatFormatting.GOLD)
+                            .append(Component.literal(text).withStyle(color))));
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 幂等触发：没有 ffmpeg 才启动一次后台下载线程；有则什么都不做 */
     static void ensureDownloaded() {
         if (started) {
@@ -45,6 +62,15 @@ final class FfmpegAutoDownloader {
         }
         if (FfmpegPipeDecoder.isAvailable()) {
             started = true;
+            return;
+        }
+        // 进入世界后才触发：主菜单时 mc.gui 为 null，聊天提示会被静默丢掉
+        try {
+            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+            if (mc == null || mc.level == null) {
+                return;
+            }
+        } catch (Throwable t) {
             return;
         }
         synchronized (FfmpegAutoDownloader.class) {
@@ -73,6 +99,7 @@ final class FfmpegAutoDownloader {
             FlapDisplayPlus.LOGGER.info(
                     "[Media] 未检测到 FFmpeg 解码器，开始自动下载（约29MB，npmmirror 镜像）→ {}",
                     target.getAbsolutePath());
+            chat("未检测到 FFmpeg 解码器，开始自动下载（约29MB）…", ChatFormatting.YELLOW);
 
             HttpClient client = HttpClient.newBuilder()
                     .followRedirects(HttpClient.Redirect.ALWAYS)
@@ -85,6 +112,7 @@ final class FfmpegAutoDownloader {
             HttpResponse<InputStream> resp = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
             if (resp.statusCode() != 200) {
                 FlapDisplayPlus.LOGGER.warn("[Media] FFmpeg 下载失败：HTTP {}（不影响播放）", resp.statusCode());
+                chat("FFmpeg 下载失败：HTTP " + resp.statusCode() + "（不影响播放）", ChatFormatting.RED);
                 return;
             }
             long total = 0;
@@ -104,6 +132,7 @@ final class FfmpegAutoDownloader {
             }
             if (total < MIN_BYTES) {
                 FlapDisplayPlus.LOGGER.warn("[Media] FFmpeg 下载不完整（{}字节），放弃（不影响播放）", total);
+                chat("FFmpeg 下载不完整，已放弃（不影响播放）", ChatFormatting.RED);
                 Files.deleteIfExists(tmp.toPath());
                 return;
             }
@@ -120,9 +149,11 @@ final class FfmpegAutoDownloader {
             FlapDisplayPlus.LOGGER.info(
                     "[Media] FFmpeg 解码器下载完成（{}MB）。正在播放的视频将在下一轮循环自动切换到 FFmpeg 后端",
                     total >> 20);
+            chat("FFmpeg 下载完成（" + (total >> 20) + "MB），视频画质将自动提升", ChatFormatting.GREEN);
         } catch (Throwable t) {
             FlapDisplayPlus.LOGGER.warn("[Media] FFmpeg 自动下载失败（不影响播放，仍用内置解码器）: {}",
                     t.toString());
+            chat("FFmpeg 自动下载失败（不影响播放）", ChatFormatting.RED);
             if (tmp != null) {
                 try {
                     Files.deleteIfExists(tmp.toPath());
