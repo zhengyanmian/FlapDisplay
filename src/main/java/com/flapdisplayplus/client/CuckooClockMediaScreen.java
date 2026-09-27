@@ -20,7 +20,9 @@ import com.flapdisplayplus.music.MusicNetIntegration;
 import com.flapdisplayplus.net.MediaResolverManager;
 import com.flapdisplayplus.net.NetMediaManager;
 import com.flapdisplayplus.network.SetMediaPacket;
+import com.simibubi.create.foundation.gui.AllGuiTextures;
 import net.createmod.catnip.gui.AbstractSimiScreen;
+import net.createmod.catnip.gui.UIRenderHelper;
 import net.minecraft.Util;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -464,15 +466,21 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
     protected void renderWindow(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         int left = this.guiLeft;
         int top = this.guiTop;
+        // 机械动力（Create）风格窗口：整个窗口（含按钮区）统一收进一个
+        // 「深色内底 + 黄铜圆角边框」的 Simi 窗口，配色/拼法与 Create 自家
+        // ValueSettingsScreen（扳手调值界面）完全一致。按钮控件本身不动。
+        int w = this.windowWidth;
+        int h = this.windowHeight;
 
-        // 木质面板（配色与描边统一走 FdpWidgets，不再就地硬编码色值）
-        FdpWidgets.panel(graphics, left, top, PANEL_W, PANEL_H);
+        // 内底：Create value_settings.png 上 BAR_BG 单像素 (14,0,0)，即官方调值窗口的深底色
+        graphics.fill(left, top, left + w, top + h, 0xFF0E0000);
+        renderBrassFrame(graphics, left, top, w, h);
 
         FdpWidgets.centeredNote(graphics, "翻牌万象 · 布谷鸟时钟媒体",
-                left + PANEL_W / 2, top + 8, FdpWidgets.TEXT);
+                left + w / 2, top + 8, FdpWidgets.TEXT);
 
         // 选项卡占 top+18~38；状态提示居中显示在选项卡下方
-        FdpWidgets.centeredNote(graphics, status, left + PANEL_W / 2, top + 44, FdpWidgets.TEXT_HL);
+        FdpWidgets.centeredNote(graphics, status, left + w / 2, top + 44, FdpWidgets.TEXT_HL);
 
         // 网格：3 列 × 2 行（缩略图 + 文件名）；几何来自 grid()，与命中判定共用
         Grid g = grid();
@@ -540,7 +548,42 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         }
 
         graphics.drawCenteredString(this.font, "第 " + (page + 1) + " / " + totalPages + " 页",
-                left + PANEL_W / 2, top + PANEL_H - 14, FdpWidgets.TEXT_DIM);
+                left + w / 2, top + PANEL_H - 14, FdpWidgets.TEXT_DIM);
+    }
+
+    /**
+     * 机械动力风格的黄铜窗口边框。
+     *
+     * 与 Create 官方 ValueSettingsScreen.renderBrassFrame 逐参数一致（javap 字节码核对）：
+     * 四角 4×4 角件 + 左右 3px 竖条 drawStretched 拉伸 + 上下 3px 横条 drawCropped。
+     * 贴图为 Create 的 value_settings.png（packed 段 BRASS_FRAME_*）。
+     *
+     * 注意：drawCropped 的采样宽度跟随目标宽度（maxU = startX + w），
+     * 我们的窗口横条（w-8=352）超过贴图段宽 256，必须拆成两段各 ≤248，否则 UV 越界。
+     */
+    private void renderBrassFrame(GuiGraphics graphics, int x, int y, int w, int h) {
+        AllGuiTextures.BRASS_FRAME_TL.render(graphics, x, y);
+        AllGuiTextures.BRASS_FRAME_TR.render(graphics, x + w - 4, y);
+        AllGuiTextures.BRASS_FRAME_BL.render(graphics, x, y + h - 4);
+        AllGuiTextures.BRASS_FRAME_BR.render(graphics, x + w - 4, y + h - 4);
+        if (h > 8) {
+            UIRenderHelper.drawStretched(graphics, x, y + 4, 3, h - 8, 0,
+                    AllGuiTextures.BRASS_FRAME_LEFT);
+            UIRenderHelper.drawStretched(graphics, x + w - 3, y + 4, 3, h - 8, 0,
+                    AllGuiTextures.BRASS_FRAME_RIGHT);
+        }
+        if (w > 8) {
+            int edge = w - 8;
+            int half = edge / 2;
+            UIRenderHelper.drawCropped(graphics, x + 4, y, half, 3, 0,
+                    AllGuiTextures.BRASS_FRAME_TOP);
+            UIRenderHelper.drawCropped(graphics, x + 4 + half, y, edge - half, 3, 0,
+                    AllGuiTextures.BRASS_FRAME_TOP);
+            UIRenderHelper.drawCropped(graphics, x + 4, y + h - 3, half, 3, 0,
+                    AllGuiTextures.BRASS_FRAME_BOTTOM);
+            UIRenderHelper.drawCropped(graphics, x + 4 + half, y + h - 3, edge - half, 3, 0,
+                    AllGuiTextures.BRASS_FRAME_BOTTOM);
+        }
     }
 
     private String getExt(File f) {
