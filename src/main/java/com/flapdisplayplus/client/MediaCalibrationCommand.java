@@ -15,11 +15,21 @@
  *   /fdpcal inset <值>               四边统一内缩（负数外扩）
  *   /fdpcal ix  <值>                 左右内缩（负数外扩，默认 -0.5）
  *   /fdpcal iy  <值>                 上下内缩（默认 2.5）
- *   /fdpcal z   <值>                 深度偏移（默认 0.01；越大斜看时媒体越像浮在方块外）
+ *   /fdpcal z   <值>                 ★深度（默认 -0.49 = 与面板正面共面）
  *   /fdpcal reset                    恢复默认值
  *   /fdpcal save                     写入 config/flapdisplayplus-common.toml
  *
  * 单位统一为 1/32 方块（≈0.5 像素）：2 单位 ≈ 1 像素。
+ *
+ * 【2026-09-27 关键澄清：哪些旋钮能修什么】
+ *   x / y / inset / ix / iy  = 正向（平面内）平移与缩放。
+ *       只能修「正面平视时边缘对不齐」。它们【结构上不可能】修掉
+ *       「斜着看时媒体与方块错开」——因为那是深度差造成的视差，
+ *       偏移量 = 深度差 × tan(视角)，随视角变化，平移是常量，永远追不上。
+ *   z = 唯一能修侧面视差的旋钮。
+ *       基准：0 = 翻牌字符平面（面板正面前方 0.5 单位，Create 为防共面闪烁而抬高）；
+ *             -0.5 = 与面板可见正面共面 ⇒ 视差恒为 0（默认 -0.49）。
+ *       旧版本把 z 允许范围限死在 0.0~0.5，调不到负值，所以侧面差距根本修不了。
  */
 package com.flapdisplayplus.client;
 
@@ -44,7 +54,7 @@ public final class MediaCalibrationCommand {
     private static final int DEF_INSET = 0;
     private static final double DEF_INSET_X = -0.5;
     private static final double DEF_INSET_Y = 2.5;
-    private static final double DEF_Z = 0.01;
+    private static final double DEF_Z = -0.49;
 
     private MediaCalibrationCommand() {
     }
@@ -113,7 +123,7 @@ public final class MediaCalibrationCommand {
                 msg = String.format("insetY = %.2f", nv);
             }
             case "z" -> {
-                double nv = clampD(relative ? Config.MEDIA_Z_OFFSET.get() + v : v, 0.0, 0.5);
+                double nv = clampD(relative ? Config.MEDIA_Z_OFFSET.get() + v : v, -2.0, 0.5);
                 Config.MEDIA_Z_OFFSET.set(nv);
                 msg = String.format("zOffset = %.3f", nv);
             }
@@ -133,7 +143,11 @@ public final class MediaCalibrationCommand {
                 Config.MEDIA_MEDIA_INSET.get(),
                 Config.MEDIA_INSET_X.get(), Config.MEDIA_INSET_Y.get(), Config.MEDIA_Z_OFFSET.get())), false);
         src.sendSuccess(() -> Component.literal(
-                "§7单位 = 1/32 方块（2 单位 ≈ 1 像素）。用 /fdpcal ix|iy|z <值> 微调，/fdpcal save 落盘。"), false);
+                "§7单位 = 1/32 方块（2 单位 ≈ 1 像素）。"), false);
+        src.sendSuccess(() -> Component.literal(
+                "§7· x / y / inset / ix / iy §8→ 只修【正面平视】时的边缘对齐。"), false);
+        src.sendSuccess(() -> Component.literal(
+                "§7· z §8→ §f斜着看时媒体与方块错开（半像素差距）只能靠它修：§f-0.5 = 与面板正面共面（视差 0）。"), false);
         return 1;
     }
 

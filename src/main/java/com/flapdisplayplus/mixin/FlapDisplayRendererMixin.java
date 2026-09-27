@@ -149,8 +149,20 @@ public abstract class FlapDisplayRendererMixin {
         int cfgOffX = Config.MEDIA_MEDIA_OFFSET_X.get();
         int cfgOffY = Config.MEDIA_MEDIA_OFFSET_Y.get();
         int cfgInset = Config.MEDIA_MEDIA_INSET.get();
-        // 深度偏移：默认 0.01（≈0.3 毫米）。斜看时「媒体与方块之间还有一点距离」的观感就来自它，
-        // 已从早期的 1.0（= 1/32 方块）压到现在的量级；防共面闪烁由下面的 ZOffset 渲染类型承担。
+        // 【2026-09-27 深度基准修正 —— 「侧面看差半个像素」的真正根因】
+        // create 6.0.10 renderSafe 字节码实测的坐标基准（内容坐标系，1 单位 = 1/32 方块）：
+        //   内容 z = 0    → 翻牌字符平面。Create 把字符叶片画在面板【可见正面】前方 0.5 单位
+        //                  （= 1/64 方块），目的是防止叶片与面板共面闪烁。
+        //   内容 z = -0.5 → 与面板可见正面【完全共面】（推导：renderSafe 末尾
+        //                  scale(0.03125) 后 translate(0,0,0.5)，配前面的 translate(0,0,-0.1875)
+        //                  —— -3/16 正好等于方块模型 display_board/block 正面钢板的 z ——
+        //                  得 方块z = 0.1875 - (内容z + 0.5)/32；内容 z=-0.5 时正好 = 3/16）。
+        // 旧默认 z=0.01 落在字符平面上 ⇒ 媒体跟着前凸 0.5 单位 ⇒ 斜看时相对方块错开
+        // 0.5×tan(视角) 单位（45° 时约半格像素，正是用户报的现象）。
+        // x/y/inset 是平面内平移，属于常量偏移，【结构上】追不上随视角变化的视差 —— 所以调它们没用。
+        // 现在默认 -0.49：与面板共面（视差 ≈ 0），留 0.01 单位作确定性余量。
+        // 可以安全压回面板平面的原因：媒体显示源 provideLine() 返回 EMPTY_LINE，
+        // 字符平面没有叶片（空格不产生字形四边形），不会被字符遮挡。
         float z = (float) (double) Config.MEDIA_Z_OFFSET.get();
 
         float x0 = (float) insetX + cfgOffX + cfgInset;
@@ -168,7 +180,8 @@ public abstract class FlapDisplayRendererMixin {
         Matrix4f pose = ms.last().pose();
         // 独立 RenderBuffers（与 Create 的 buffer 隔离），画完立即 endBatch 提交。
         // 用 ZOffset 变体：它走 VIEW_OFFSET_Z_LAYERING（把 modelview 等比缩放 0.99975586，
-        // 纯深度方向前移，无几何位移），保证稳定盖在面板之上，因此 z 可压到近乎贴面。
+        // 纯深度方向前移，无几何位移），保证稳定盖在面板之上 —— 正因如此才敢让媒体与面板
+        // 【共面】(z = -0.49) 而不闪烁；共面 = 任意视角视差恒为 0，这才是消除「侧面半像素差距」的关键。
         RenderType rt = RenderType.entityCutoutNoCullZOffset(frame);
         VertexConsumer vc = FDP_RENDER_BUFFERS.bufferSource().getBuffer(rt);
 
