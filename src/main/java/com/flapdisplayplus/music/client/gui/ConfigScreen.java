@@ -12,15 +12,20 @@
  *  3. 新增「媒体性能」子页，暴露 videoMaxDim / videoFps / imageMaxDim —— 这三个配置
  *     原先只能手改配置文件，用户遇到卡顿时无从下手。
  *  4. 布尔/枚举控件改 FdpWidgets.toggle/cycle，配置写入与落盘逻辑收敛到一处。
+ *
+ * 【2026-09-28 改版】
+ *  - 按钮与文字恢复【游戏自带】原版样式：Button 原版渲染、原版配色
+ *    （FdpButton 木质风格仅保留在布谷鸟时钟媒体界面与登录/搜索界面）。
+ *  - 移除 yt-dlp 网站解析相关设置行（站点解析功能已整体删除，仅支持直链）。
  */
 package com.flapdisplayplus.music.client.gui;
 
-import com.flapdisplayplus.client.FdpButton;
 import com.flapdisplayplus.client.FdpWidgets;
 import com.flapdisplayplus.config.Config;
 import com.flapdisplayplus.music.MusicNetIntegration;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -38,6 +43,21 @@ public class ConfigScreen extends Screen {
 
     /** 说明文字：由 TextFlow 累加排版 */
     private final TextFlow flow = new TextFlow();
+
+    // ===================== 原版风格配色（2026-09-28：按钮与文字恢复游戏自带样式） =====================
+    private static final int C_TITLE = 0xFFFFFFFF;
+    private static final int C_H1 = 0xFFFFAA00;
+    private static final int C_TEXT = 0xFFE0E0E0;
+    private static final int C_P = 0xFFA0A0A0;
+    private static final int C_DIM = 0xFF707070;
+    private static final int C_OK = 0xFF55FF55;
+    private static final int C_WARN = 0xFFFFAA55;
+
+    /** 原版按钮助手：与原 FdpButton.create 同签名，内部用游戏自带 Button 渲染 */
+    private static Button btn(int x, int y, int w, int h, Component message,
+                              Button.OnPress onPress) {
+        return Button.builder(message, onPress).bounds(x, y, w, h).build();
+    }
 
     /**
      * 文本列相对屏幕中心的横向偏移（render 时换算成绝对 left）。
@@ -101,15 +121,15 @@ public class ConfigScreen extends Screen {
         /** 小节标题（金色，上方留白） */
         void h1(String text) {
             y += 6;
-            add(text, FdpWidgets.TEXT_HL);
+            add(text, C_H1);
             y += 2;
         }
 
         /** 正文（浅灰） */
-        void p(String text) { add(text, 0xFFC8C8C8); }
+        void p(String text) { add(text, C_P); }
 
-        /** 次要说明（暗米色） */
-        void dim(String text) { add(text, FdpWidgets.TEXT_DIM); }
+        /** 次要说明（暗灰） */
+        void dim(String text) { add(text, C_DIM); }
 
         /** 等宽风格（链接/标识符，浅蓝） */
         void mono(String text) { add(text, 0xFF9CDCFE); }
@@ -155,13 +175,13 @@ public class ConfigScreen extends Screen {
         int gap = 32;
         int w = 260;
 
-        this.addRenderableWidget(FdpButton.create(cx - w / 2, y, w, 20,
+        this.addRenderableWidget(btn(cx - w / 2, y, w, 20,
                 Component.literal("通用与媒体设置"), b ->
                         Minecraft.getInstance().setScreen(new ConfigScreen(modContainer, this, Page.GENERAL))));
         y += gap;
 
         boolean netMusic = MusicNetIntegration.isNetMusicLoaded();
-        this.addRenderableWidget(FdpButton.create(cx - w / 2, y, w, 20,
+        this.addRenderableWidget(btn(cx - w / 2, y, w, 20,
                 Component.literal("🎵 网络音乐机配置" + (netMusic ? "" : "（未安装）")), b -> {
                     if (netMusic) {
                         Minecraft.getInstance().setScreen(new ConfigScreen(modContainer, this, Page.MUSIC_HUB));
@@ -172,7 +192,7 @@ public class ConfigScreen extends Screen {
                 }));
         y += gap;
 
-        this.addRenderableWidget(FdpButton.create(cx - 50, this.height - 30, 100, 20,
+        this.addRenderableWidget(btn(cx - 50, this.height - 30, 100, 20,
                 Component.literal("返回"), b -> this.onClose()));
     }
 
@@ -186,22 +206,16 @@ public class ConfigScreen extends Screen {
         addToggle(left, flow.y(), 70, Config.MEDIA_VIDEO_SOUND, "视频播放声音");
         flow.skip(26);
 
-        this.addRenderableWidget(FdpButton.create(left, flow.y(), 160, 20,
+        this.addRenderableWidget(btn(left, flow.y(), 160, 20,
                 Component.literal("媒体性能（清晰度/帧率）"), b ->
                         Minecraft.getInstance().setScreen(new ConfigScreen(modContainer, this, Page.MEDIA))));
         flow.skip(34);
 
         flow.h1("网络媒体");
         flow.p("直链（http 图片/视频）可直接使用。");
-        flow.p("视频网站链接需要本机的 yt-dlp 解析，");
-        flow.p("模组自身不含任何站点解析代码。");
-
-        addPathRow(left, flow.y(), "yt-dlp 路径", Config.MEDIA_YTDLP_PATH, 150);
-        flow.dim("未安装时可用 winget install yt-dlp 安装。");
-        flow.dim("直链图片/视频无需 yt-dlp。");
         flow.skip(6);
 
-        this.addRenderableWidget(FdpButton.create(left, flow.y(), 160, 20,
+        this.addRenderableWidget(btn(left, flow.y(), 160, 20,
                 Component.literal("打开媒体缓存文件夹"), b -> {
                     java.io.File dir = new java.io.File(
                             Minecraft.getInstance().gameDirectory, "flap-media/netcache");
@@ -264,7 +278,7 @@ public class ConfigScreen extends Screen {
 
         if (!MusicNetIntegration.isNetMusicLoaded()) {
             flow.h1("未检测到网络音乐机（Net Music）模组");
-            flow.colored("音乐联动功能当前不可用", 0xFFFFAA55);
+            flow.colored("音乐联动功能当前不可用", C_WARN);
             flow.p("请安装 Net Music 后重启游戏，即可联动显示");
             flow.p("封面、歌名与歌词（翻牌 / CD 播放机）");
             backToHubButton();
@@ -279,7 +293,7 @@ public class ConfigScreen extends Screen {
         addPageButton("播放设置", Page.PLAYBACK, cx, y); y += gap;
         addPageButton("网易云设置", Page.NETEASE, cx, y); y += gap;
         addPageButton("搜索设置", Page.SEARCH, cx, y); y += gap;
-        this.addRenderableWidget(FdpButton.create(cx - w / 2, y, w, 20,
+        this.addRenderableWidget(btn(cx - w / 2, y, w, 20,
                 Component.literal("QQ音乐设置（扫码登录）"), b ->
                         Minecraft.getInstance().setScreen(new QqLoginScreen(this))));
         y += gap;
@@ -287,19 +301,19 @@ public class ConfigScreen extends Screen {
     }
 
     private void backToHubButton() {
-        this.addRenderableWidget(FdpButton.create(this.width / 2 - 80, this.height - 30, 160, 20,
+        this.addRenderableWidget(btn(this.width / 2 - 80, this.height - 30, 160, 20,
                 Component.literal("← 返回设置主页"),
                 b -> Minecraft.getInstance().setScreen(new ConfigScreen(modContainer, parent, Page.HUB))));
     }
 
     private void addPageButton(String label, Page target, int cx, int y) {
-        this.addRenderableWidget(FdpButton.create(cx - 130, y, 260, 20,
+        this.addRenderableWidget(btn(cx - 130, y, 260, 20,
                 Component.literal(label),
                 b -> Minecraft.getInstance().setScreen(new ConfigScreen(modContainer, this, target))));
     }
 
     private void backButton() {
-        this.addRenderableWidget(FdpButton.create(this.width / 2 - 80, this.height - 30, 160, 20,
+        this.addRenderableWidget(btn(this.width / 2 - 80, this.height - 30, 160, 20,
                 Component.literal("← 返回音乐配置"),
                 b -> Minecraft.getInstance().setScreen(new ConfigScreen(modContainer, parent, Page.MUSIC_HUB))));
     }
@@ -371,9 +385,9 @@ public class ConfigScreen extends Screen {
 
         // 保存 / 登录按钮
         int btnY = flow.y();
-        this.addRenderableWidget(FdpButton.create(left, btnY, 140, 20,
+        this.addRenderableWidget(btn(left, btnY, 140, 20,
                 Component.literal("保存 Cookie"), b -> FdpWidgets.save()));
-        this.addRenderableWidget(FdpButton.create(left + 160, btnY, 140, 20,
+        this.addRenderableWidget(btn(left + 160, btnY, 140, 20,
                 Component.literal("打开登录界面"),
                 b -> Minecraft.getInstance().setScreen(new LoginScreen())));
         flow.skip(28);
@@ -385,7 +399,7 @@ public class ConfigScreen extends Screen {
                         : "当前状态：未登录（使用匿名 API）",
                 hasCookie ? FdpWidgets.TEXT_OK : 0xFFC8C8C8);
 
-        this.addRenderableWidget(FdpButton.create(left, flow.y(), 140, 20,
+        this.addRenderableWidget(btn(left, flow.y(), 140, 20,
                 Component.literal("退出登录"), b -> {
                     com.flapdisplayplus.music.config.Config.NETEASE_COOKIE.set("");
                     MusicNetIntegration.applyCookie("");
@@ -418,7 +432,7 @@ public class ConfigScreen extends Screen {
         // 【2026-09-27 修复排版】此前 statText 宽 120 且文字居中，"每页 N 首"压到 -5 按钮。
         // 现在三段各归其位：-5（left..+50）｜数值文字（+56 居中，宽 60）｜+5（+120..+180）。
         int sizeY = flow.y();
-        this.addRenderableWidget(FdpButton.create(left, sizeY, 50, 20,
+        this.addRenderableWidget(btn(left, sizeY, 50, 20,
                 Component.literal("-5"), b -> {
                     int v = Math.max(5, com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.get() - 5);
                     com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.set(v);
@@ -426,7 +440,7 @@ public class ConfigScreen extends Screen {
                 }));
         this.addRenderableWidget(FdpWidgets.statText(left + 56, sizeY + 4, 60,
                 () -> "每页 " + com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.get() + " 首"));
-        this.addRenderableWidget(FdpButton.create(left + 120, sizeY, 50, 20,
+        this.addRenderableWidget(btn(left + 120, sizeY, 50, 20,
                 Component.literal("+5"), b -> {
                     int v = Math.min(50, com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.get() + 5);
                     com.flapdisplayplus.music.config.Config.SEARCH_PAGE_SIZE.set(v);
@@ -460,10 +474,10 @@ public class ConfigScreen extends Screen {
                            String onText, String offText) {
         flow.skip(y - flow.y());                       // 对齐到指定行
         int labelY = flow.y();
-        flow.colored(toggleLabel(val.getPath()), FdpWidgets.TEXT);
+        flow.colored(toggleLabel(val.getPath()), C_TEXT);
         // 控件列右缘 176：150 时「结果列表模式」这类 6 字标签(54px)会被
         // 110px 宽按钮(left+40 起)压住 —— 用户截图确认重叠
-        this.addRenderableWidget(FdpButton.create(left + 176 - btnW, labelY, btnW, 20,
+        this.addRenderableWidget(btn(left + 176 - btnW, labelY, btnW, 20,
                 Component.literal(val.get() ? onText : offText),
                 b -> {
                     val.set(!val.get());
@@ -477,7 +491,7 @@ public class ConfigScreen extends Screen {
                                                    ModConfigSpec.EnumValue<T> val) {
         flow.skip(y - flow.y());
         int labelY = flow.y();
-        flow.colored(toggleLabel(val.getPath()), FdpWidgets.TEXT);
+        flow.colored(toggleLabel(val.getPath()), C_TEXT);
         this.addRenderableWidget(FdpWidgets.cycle(left + 176 - btnW, labelY, btnW, 20, val,
                 this::enumLabel, null));
     }
@@ -490,7 +504,7 @@ public class ConfigScreen extends Screen {
                            String label) {
         flow.skip(y - flow.y());
         int labelY = flow.y();
-        flow.colored(label, FdpWidgets.TEXT);
+        flow.colored(label, C_TEXT);
         this.addRenderableWidget(FdpWidgets.toggle(left + 150 - btnW, labelY, btnW, 20, val));
     }
 
@@ -499,23 +513,6 @@ public class ConfigScreen extends Screen {
                              int[] options, java.util.function.IntFunction<String> fmt) {
         this.addRenderableWidget(FdpWidgets.cycleList(left, y, w, 20, val, options,
                 fmt::apply, null));
-    }
-
-    /** 路径输入行（文本配置项）：输入框在上、说明在下，共用 TextFlow 光标 */
-    private void addPathRow(int left, int y, String label, ModConfigSpec.ConfigValue<String> val,
-                            int boxW) {
-        flow.skip(y - flow.y());
-        int rowY = flow.y();
-        EditBox box = new EditBox(this.font, left, rowY, boxW, 20, Component.literal(""));
-        box.setMaxLength(1024);
-        box.setValue(val.get() == null ? "" : val.get());
-        box.setResponder(s -> {
-            val.set(s.trim());
-            FdpWidgets.save();
-        });
-        this.addRenderableWidget(box);
-        flow.skip(26);                                  // 给输入框让出高度
-        flow.dim(label + "（留空 = 自动查找）");
     }
 
     /** 配置路径末段 → 中文标签，如 "media.videoSound" → "视频播放声音" */
@@ -565,7 +562,7 @@ public class ConfigScreen extends Screen {
         this.renderBackground(graphics, mouseX, mouseY, partialTick);
         super.render(graphics, mouseX, mouseY, partialTick);
 
-        FdpWidgets.title(graphics, this.title.getString(), this.width / 2, 20);
+        FdpWidgets.title(graphics, this.title.getString(), this.width / 2, 20, C_TITLE);
         int left = this.width / 2 - 150;
         flow.render(graphics, this.font, left);
     }

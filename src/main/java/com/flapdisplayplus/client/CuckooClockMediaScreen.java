@@ -52,8 +52,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
     /** 网格展示用的统一条目：本地文件与网络链接混排，共用一套渲染/点击逻辑 */
     private final List<Entry> entries = new ArrayList<>();
     /** 链接输入框 */
-    private net.minecraft.client.gui.components.EditBox urlBox;    /** yt-dlp 可用性检测结果缓存（null=尚未检测） */
-    private Boolean ytdlpAvailable;
+    private net.minecraft.client.gui.components.EditBox urlBox;
     private String selectedPath = "";
     private String displayMode = "FIT";   // 默认保持比例完整显示（不强制拉伸），可切换 STRETCH/COVER
     private int page = 0;
@@ -245,19 +244,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         selectedPath = url;
         // 幂等：已有任务不会重复下载
         NetMediaManager.acquire(url);
-        boolean hasYtDlp = isYtDlpAvailable();
-        status = hasYtDlp
-                ? "已添加，正在解析/下载…"
-                : "已添加。直链可直接用；视频网站链接需要 yt-dlp（未检测到，见日志提示）";
-    }
-
-    /** yt-dlp 可用性（结果缓存，避免每次点按钮都启动探测进程） */
-    private boolean isYtDlpAvailable() {
-        if (ytdlpAvailable == null) {
-            ytdlpAvailable = MediaResolverManager.isYtDlpAvailable();
-            FlapDisplayPlus.LOGGER.info("[MediaGUI] yt-dlp 可用={}", ytdlpAvailable);
-        }
-        return ytdlpAvailable;
+        status = "已添加，正在解析/下载…";
     }
 
     /** 获取 flap-media 目录（游戏根目录下，不存在则创建） */
@@ -369,7 +356,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
                 Component.literal("✖ 关闭"), b -> this.onClose()));
 
         // ===== 第三行：网络链接输入 =====
-        // 直链（图床/对象存储/CDN）直接下载；视频网站链接交给用户本机的 yt-dlp 解析。
+        // 直链（图床/对象存储/CDN）直接下载；站点解析功能已移除，只支持 http(s) 直链。
         urlBox = new net.minecraft.client.gui.components.EditBox(
                 this.font, cx - 169, row3, 232, 20, Component.literal(""));
         urlBox.setMaxLength(2048);

@@ -3,8 +3,8 @@
  *
  * 解析器调度：按优先级依次尝试各解析器。
  *
- * 顺序：直链（无需外部工具、零依赖）→ yt-dlp（站点链接，需用户本机安装）。
- * 直链优先可以避免「明明是直链却去启动一遍 yt-dlp」的无谓等待。
+ * 现只保留直链解析（无需外部工具、零依赖）：图床/CDN/视频直链可直接播放。
+ * 站点解析功能已按需求移除——只支持 http(s) 直链。
  *
  * 所有解析都应在【后台线程】调用，不要阻塞渲染线程。
  */
@@ -12,7 +12,6 @@ package com.flapdisplayplus.net;
 
 import com.flapdisplayplus.FlapDisplayPlus;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -21,9 +20,8 @@ public final class MediaResolverManager {
     private MediaResolverManager() {
     }
 
-    private static final List<MediaResolver> RESOLVERS = Arrays.asList(
-            new DirectLinkResolver(),
-            new YtDlpResolver()
+    private static final List<MediaResolver> RESOLVERS = List.of(
+            new DirectLinkResolver()
     );
 
     /** 是否是网络链接（本地文件路径返回 false） */
@@ -65,14 +63,5 @@ public final class MediaResolverManager {
             throw last;
         }
         throw new IllegalStateException("没有可用于该链接的解析器。");
-    }
-
-    /** yt-dlp 是否可用（用于界面提示与启用/禁用输入） */
-    public static boolean isYtDlpAvailable() {
-        try {
-            return YtDlpResolver.resolveExecutable() != null;
-        } catch (Throwable t) {
-            return false;
-        }
     }
 }

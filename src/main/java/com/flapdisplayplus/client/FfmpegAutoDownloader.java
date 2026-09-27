@@ -1,8 +1,8 @@
 /*
  * FfmpegAutoDownloader.java
  *
- * FFmpeg 解码器缺失时自动下载（借鉴 Functional TVs & Boomboxes 的做法——
- * 它在首次使用时下载 yt-dlp/Deno 并做校验；我们下载 ffmpeg-static 的 Windows x64 构建）。
+ * FFmpeg 解码器缺失时自动下载（借鉴 Functional TVs & Boomboxes 的做法；
+ * npmmirror 的 ffmpeg-static 包本身在首次使用时还会下载 yt-dlp/Deno 做校验，我们直接取其 Windows x64 构建）。
  *
  * - 触发：MediaManager.tick 每刻调用 ensureDownloaded()（幂等、探测走缓存，开销可忽略）。
  * - 下载源：npmmirror（registry.npmmirror.com）镜像的 ffmpeg-static b6.0 win32-x64，

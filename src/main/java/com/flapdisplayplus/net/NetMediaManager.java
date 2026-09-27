@@ -27,7 +27,7 @@ public final class NetMediaManager {
     public enum State {
         /** 排队/准备中 */
         PENDING,
-        /** 正在解析直链（可能调用外部 yt-dlp） */
+        /** 正在解析/下载直链 */
         RESOLVING,
         /** 正在下载 */
         DOWNLOADING,

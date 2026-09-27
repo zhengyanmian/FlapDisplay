@@ -94,9 +94,14 @@ public final class FdpWidgets {
         graphics.vLine(x + w - 1, y, y + h - 1, color);
     }
 
-    /** 面板内的居中标题 */
+    /** 面板内的居中标题（默认木质风格米色） */
     public static void title(GuiGraphics graphics, String text, int centerX, int y) {
-        graphics.drawCenteredString(Minecraft.getInstance().font, text, centerX, y, TEXT);
+        title(graphics, text, centerX, y, TEXT);
+    }
+
+    /** 面板内的居中标题（自定义颜色） */
+    public static void title(GuiGraphics graphics, String text, int centerX, int y, int color) {
+        graphics.drawCenteredString(Minecraft.getInstance().font, text, centerX, y, color);
     }
 
     /** 面板内的居中说明文字 */
@@ -120,7 +125,7 @@ public final class FdpWidgets {
                 String s = text.get();
                 int tw = Minecraft.getInstance().font.width(s);
                 graphics.drawString(Minecraft.getInstance().font, s,
-                        getX() + (getWidth() - tw) / 2, getY() + 6, TEXT_DIM);
+                        getX() + (getWidth() - tw) / 2, getY() + 6, 0xFFA0A0A0);
             }
 
             @Override
@@ -134,44 +139,44 @@ public final class FdpWidgets {
     /**
      * 布尔开关按钮（绑定 ModConfigSpec.BooleanValue）。
      * 点击 → 取反 → 写入 SPEC → 落盘 → 刷新按钮文案。
+     * 【2026-09-28】改用游戏自带 Button 渲染（原 FdpButton 木质风格仅保留在媒体界面）。
      *
      * 替代 ConfigScreen 里重复的 addBoolRow 模式。
      */
-    public static FdpButton toggle(int x, int y, int w, int h,
+    public static net.minecraft.client.gui.components.Button toggle(int x, int y, int w, int h,
                                    ModConfigSpec.BooleanValue val,
                                    Function<Boolean, String> labelOf,
                                    Runnable afterChange) {
-        FdpButton btn = FdpButton.create(x, y, w, h,
-                Component.literal(labelOf.apply(val.get())),
-                b -> {
+        return net.minecraft.client.gui.components.Button.builder(
+                        Component.literal(labelOf.apply(val.get())), b -> {
                     val.set(!val.get());
                     save();
                     b.setMessage(Component.literal(labelOf.apply(val.get())));
                     if (afterChange != null) {
                         afterChange.run();
                     }
-                });
-        return btn;
+                }).bounds(x, y, w, h).build();
     }
 
     /** 布尔开关的简化形式（开/关 两字文案） */
-    public static FdpButton toggle(int x, int y, int w, int h, ModConfigSpec.BooleanValue val) {
+    public static net.minecraft.client.gui.components.Button toggle(int x, int y, int w, int h,
+                                                                    ModConfigSpec.BooleanValue val) {
         return toggle(x, y, w, h, val, v -> v ? "开" : "关", null);
     }
 
     /**
      * 枚举循环切换按钮（绑定 ModConfigSpec.EnumValue）。
      * 点击 → 取下一个枚举值（环形）→ 写入 SPEC → 落盘 → 刷新文案。
+     * 【2026-09-28】改用游戏自带 Button 渲染。
      *
      * 替代 ConfigScreen 里重复的 addEnumRow 模式。
      */
-    public static <T extends Enum<T>> FdpButton cycle(int x, int y, int w, int h,
+    public static <T extends Enum<T>> net.minecraft.client.gui.components.Button cycle(int x, int y, int w, int h,
                                                       ModConfigSpec.EnumValue<T> val,
                                                       Function<T, String> labelOf,
                                                       Runnable afterChange) {
-        FdpButton btn = FdpButton.create(x, y, w, h,
-                Component.literal(labelOf.apply(val.get())),
-                b -> {
+        return net.minecraft.client.gui.components.Button.builder(
+                        Component.literal(labelOf.apply(val.get())), b -> {
                     T[] all = val.get().getDeclaringClass().getEnumConstants();
                     List<T> list = Arrays.asList(all);
                     T next = list.get((list.indexOf(val.get()) + 1) % all.length);
@@ -181,8 +186,7 @@ public final class FdpWidgets {
                     if (afterChange != null) {
                         afterChange.run();
                     }
-                });
-        return btn;
+                }).bounds(x, y, w, h).build();
     }
 
     /** 保存配置（统一异常处理，避免每个界面各写一遍 try/catch） */
@@ -195,15 +199,15 @@ public final class FdpWidgets {
         }
     }
 
-    /** 从字符串列表里循环选值的按钮（用于帧率/清晰度这类离散档位） */
-    public static FdpButton cycleList(int x, int y, int w, int h,
+    /** 从字符串列表里循环选值的按钮（用于帧率/清晰度这类离散档位）。
+     * 【2026-09-28】改用游戏自带 Button 渲染。 */
+    public static net.minecraft.client.gui.components.Button cycleList(int x, int y, int w, int h,
                                       ModConfigSpec.IntValue val,
                                       int[] options,
                                       Function<Integer, String> labelOf,
                                       Runnable afterChange) {
-        FdpButton btn = FdpButton.create(x, y, w, h,
-                Component.literal(labelOf.apply(val.get())),
-                b -> {
+        return net.minecraft.client.gui.components.Button.builder(
+                        Component.literal(labelOf.apply(val.get())), b -> {
                     int cur = val.get();
                     int idx = 0;
                     for (int i = 0; i < options.length; i++) {
@@ -219,7 +223,6 @@ public final class FdpWidgets {
                     if (afterChange != null) {
                         afterChange.run();
                     }
-                });
-        return btn;
+                }).bounds(x, y, w, h).build();
     }
 }

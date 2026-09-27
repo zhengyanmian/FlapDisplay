@@ -47,15 +47,6 @@ public final class Config {
     /** 静态图片纹理长边上限（像素）：图片只解码一次，可给较大值保证清晰 */
     public static final ModConfigSpec.IntValue MEDIA_IMAGE_MAX_DIM;
 
-    /**
-     * 外部视频解析工具（yt-dlp）路径；留空则按系统 PATH 查找。
-     * 模组仅以子进程方式调用它获取直链，自身不包含任何站点解析逻辑。
-     */
-    public static final ModConfigSpec.ConfigValue<String> MEDIA_YTDLP_PATH;
-
-    /** 外部解析超时（秒）：站点解析慢或网络差时避免卡死界面 */
-    public static final ModConfigSpec.IntValue MEDIA_RESOLVER_TIMEOUT_SEC;
-
     /** 网络媒体缓存目录（留空则用 游戏目录/flap-media/netcache） */
     public static final ModConfigSpec.ConfigValue<String> MEDIA_NET_CACHE_DIR;
 
@@ -159,16 +150,6 @@ public final class Config {
         MEDIA_IMAGE_MAX_DIM = builder
                 .comment("静态图片纹理长边上限(像素)，默认2048。图片只解码一次，可给大值保证清晰。")
                 .defineInRange("media.imageMaxDim", 2048, 64, 8192);
-
-        MEDIA_YTDLP_PATH = builder
-                .comment("yt-dlp 可执行文件路径；留空则按系统 PATH 查找。"
-                        + "模组只以子进程方式调用它获取直链，不含任何站点解析代码。"
-                        + "未安装时可用 winget install yt-dlp 安装。")
-                .define("media.ytdlpPath", "");
-
-        MEDIA_RESOLVER_TIMEOUT_SEC = builder
-                .comment("调用外部解析器(yt-dlp)的超时秒数，默认60。")
-                .defineInRange("media.resolverTimeoutSec", 60, 5, 600);
 
         MEDIA_NET_CACHE_DIR = builder
                 .comment("网络媒体缓存目录；留空则使用 游戏目录/flap-media/netcache。")

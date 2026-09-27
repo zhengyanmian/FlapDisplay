@@ -59,7 +59,6 @@ The add-on sticks to vanilla rules: a flap display needs **kinetic power** to sh
 ### Networking
 
 - **URL direct links** (image hosts, CDNs, direct video URLs)
-- **Video site links** (Bilibili, YouTube, …) via your locally installed `yt-dlp` — no site-specific reverse engineering is built in; direct links work without yt-dlp
 - **Progressive playback** — start watching before the download finishes
 - **Caching** — repeat plays hit the cache; size cap & LRU cleanup configurable
 
@@ -117,7 +116,7 @@ In-game config screen (Create-styled) under `Mods → FlapDisplayPlus`:
 ## ⚠️ Notes
 
 - The JCodec fallback only supports MP4/M4V/MOV (H.264); full format support needs FFmpeg
-- Site parsing requires a user-installed `yt-dlp`; `m3u8`/`dash` manifests are explicitly rejected
+- Only **http(s) direct links** are supported — no video-site page links; `m3u8`/`dash` manifests are explicitly rejected
 - Software decoding — lower `videoMaxDim` / `videoFps` for long, high-resolution videos
 
 ## 📄 License
@@ -154,7 +153,6 @@ MIT. Third-party: ZXing (Apache-2.0) · JCodec (BSD-2-Clause) · TwelveMonkeys (
 ### 网络媒体
 
 - **URL 直链**（图床、CDN、视频直链）
-- **视频网站链接**（Bilibili、YouTube 等）——通过本地安装的 `yt-dlp` 解析，模组内不做任何网站逆向；直链无需 yt-dlp
 - **边下边播**——下载未完成即可开始观看
 - **缓存**——重复播放命中缓存；容量上限与 LRU 清理可配置
 
@@ -212,7 +210,7 @@ MIT. Third-party: ZXing (Apache-2.0) · JCodec (BSD-2-Clause) · TwelveMonkeys (
 ## ⚠️ 已知限制
 
 - JCodec 兜底仅支持 MP4/M4V/MOV（H.264）；完整格式支持需要 FFmpeg
-- 网站解析需要用户自行安装 `yt-dlp`；明确拒绝 `m3u8`/`dash` 清单
+- 仅支持 **http(s) 直链**，不支持视频网站页面链接；明确拒绝 `m3u8`/`dash` 清单
 - 软解码——长时间高分辨率视频建议调低 `videoMaxDim` / `videoFps`
 
 ## 📄 许可
