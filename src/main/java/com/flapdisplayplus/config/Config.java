@@ -35,6 +35,15 @@ public final class Config {
     /** 媒体叠加层四周内缩（1/32 方块/单位） */
     public static final ModConfigSpec.IntValue MEDIA_MEDIA_INSET;
 
+    /** 媒体叠加层左右内缩（1/32 方块/单位；正数向内） */
+    public static final ModConfigSpec.DoubleValue MEDIA_INSET_X;
+
+    /** 媒体叠加层上下内缩（1/32 方块/单位；正数向内） */
+    public static final ModConfigSpec.DoubleValue MEDIA_INSET_Y;
+
+    /** 媒体叠加层深度偏移（局部单位，1 单位 = 1/32 方块） */
+    public static final ModConfigSpec.DoubleValue MEDIA_Z_OFFSET;
+
     /** 静态图片纹理长边上限（像素）：图片只解码一次，可给较大值保证清晰 */
     public static final ModConfigSpec.IntValue MEDIA_IMAGE_MAX_DIM;
 
@@ -105,6 +114,28 @@ public final class Config {
                         "正数向内缩（避免压住面板边框）；负数向外扩 —— 例如 -3 可把可见面板",
                         "之外的边框一起盖住，让媒体铺满整块面板。")
                 .defineInRange("media.inset", 0, -16, 16);
+
+        MEDIA_INSET_X = builder
+                .comment("媒体叠加层相对【整条显示带】的左右内缩（单位 = 1/32 方块，2 单位 ≈ 1 像素）。",
+                        "正数向带内缩，负数向带外扩。",
+                        "默认 -0.5 = 略微外扩，让媒体完整盖住翻牌可见面板的左右边缘。",
+                        "可用游戏内指令 /fdpcal ix <值> 实时微调。")
+                .defineInRange("media.insetX", -0.5, -16.0, 16.0);
+
+        MEDIA_INSET_Y = builder
+                .comment("媒体叠加层相对【整条显示带】的上下内缩（单位 = 1/32 方块，2 单位 ≈ 1 像素）。",
+                        "默认 2.5 = 可见面板比整条显示带上下各少 2.5 单位。",
+                        "这就是「媒体与方块之间还差一点」的主调参口：调小 = 向下/向上铺得更满。",
+                        "可用游戏内指令 /fdpcal iy <值> 实时微调。")
+                .defineInRange("media.insetY", 2.5, -16.0, 16.0);
+
+        MEDIA_Z_OFFSET = builder
+                .comment("媒体叠加层的深度偏移（局部单位，1 单位 = 1/32 方块）。",
+                        "这是「媒体看起来与方块有距离」的视差来源：值越大，斜看时媒体越像浮在方块外。",
+                        "默认 0.01（≈0.3 毫米）——防共面闪烁改由 entityCutoutNoCullZOffset 的",
+                        "深度偏置承担，所以可以压得很小。若出现闪烁再适度调大。",
+                        "可用游戏内指令 /fdpcal z <值> 实时微调。")
+                .defineInRange("media.zOffset", 0.01, 0.0, 0.5);
 
         MEDIA_IMAGE_MAX_DIM = builder
                 .comment("静态图片纹理长边上限(像素)，默认2048。图片只解码一次，可给大值保证清晰。")
