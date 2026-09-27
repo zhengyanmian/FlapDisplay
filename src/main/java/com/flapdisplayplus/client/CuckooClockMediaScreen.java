@@ -246,6 +246,10 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             status = "请先粘贴链接";
             return;
         }
+        // 自动补全协议：粘贴 example.com/img.png 这类裸地址直接可用
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            url = "https://" + url;
+        }
         if (!MediaResolverManager.isNetworkInput(url)) {
             status = "只支持 http(s) 链接";
             return;
@@ -270,8 +274,8 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             return;
         }
         if (!u.startsWith("http://") && !u.startsWith("https://")) {
-            status = "网页地址需以 http(s):// 开头";
-            return;
+            // 自动补全协议：输入 baidu.com / www.xxx.com 直接可用，不必手打 https://
+            u = "https://" + u;
         }
         String key = "web://" + u;
         if (netItems.contains(key)) {
@@ -399,7 +403,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
         urlBox = new net.minecraft.client.gui.components.EditBox(
                 this.font, cx - 169, row3, 172, 20, Component.literal(""));
         urlBox.setMaxLength(2048);
-        urlBox.setHint(Component.literal("§7粘贴 http(s) 链接或网址"));
+        urlBox.setHint(Component.literal("§7粘贴链接或网址（可省略 https://）"));
         this.addRenderableWidget(urlBox);
 
         this.addRenderableWidget(FdpButton.create(cx + 9, row3, 56, 20,
