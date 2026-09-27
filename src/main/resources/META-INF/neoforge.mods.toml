@@ -7,6 +7,7 @@ modId="flapdisplayplus"
 version="1.0.0"
 displayName="翻牌万象 FlapDisplayPlus"
 authors="枕燕眠"
+logoFile="flapdisplayplus_logo.png"
 description='''
 机械动力(Create)的翻牌显示器扩展附属模组：让翻牌显示图片、GIF 动图与
 实时信息（现实时间/游戏时间/天气/TPS）；若安装了网络音乐机(Net Music)，
