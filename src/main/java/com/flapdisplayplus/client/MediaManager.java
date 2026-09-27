@@ -136,6 +136,8 @@ public final class MediaManager {
      *    （收包清除、过期清除、拆方块、清空），只要渲染端不再取帧，音频就活不过 5 秒。
      */
     public static void tick() {
+        // FFmpeg 缺失时自动下载一次（幂等；探测走缓存，每刻调用开销可忽略）
+        FfmpegAutoDownloader.ensureDownloaded();
         sweepRemovedDisplays();
         if (VIDEOS.isEmpty()) {
             return;

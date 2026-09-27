@@ -373,7 +373,18 @@ public final class VideoPlayer {
                 // 上一帧「显示」的墙钟时刻（不是 pts！）。这是修「画面卡住不动」的关键：
                 // 即使解码慢到追不上音频时钟，也照样按 1000/fps 的间隔把画面推下去。
                 long lastShownWallMs = 0;
+                // FFmpeg 自动下载完成后主动切换后端（每 5 秒查一次；isAvailable 走缓存，开销可忽略）
+                boolean switchToFfmpeg = false;
+                long lastFfCheck = 0;
                 while (!stopped && (pic = grab.getNativeFrame()) != null) {
+                    long nowP = System.currentTimeMillis();
+                    if (nowP - lastFfCheck > 5000) {
+                        lastFfCheck = nowP;
+                        if (FfmpegPipeDecoder.isAvailable()) {
+                            switchToFfmpeg = true;
+                            break;
+                        }
+                    }
                     long ptsMs = (long) (frameIdx * frameDurMs);
                     frameIdx++;
                     waitUntil(ptsMs);
@@ -411,6 +422,11 @@ public final class VideoPlayer {
                 if (stopped) {
                     break;
                 }
+                if (switchToFfmpeg) {
+                    // 不走 loopBarrier（音频线程还在播），直接回外层重试 FFmpeg 后端；
+                    // 时钟衔接由音画同步的 seek 重同步自愈
+                    continue;
+                }
                 // EOF：与音频线程会合重置时钟后重头播放
                 loopBarrier();
             } catch (Throwable t) {
@@ -442,6 +458,8 @@ public final class VideoPlayer {
 
     /**
      * FFmpeg 管道解码主循环（结构与 jcodec 路径一致：PTS 节流 + 硬滞后 seek 重同步 + 墙钟显示）。
+     * 【2026-09-27】只在「本帧会被显示」时才做颜色转换（displayFps 通常低于源帧率，
+     * 1920 级别每省一帧就省十几毫秒 CPU）；readFrame 与转换都在本线程，零堆分配。
      */
     private void ffmpegLoop(FfmpegPipeDecoder dec) {
         frameDurMs = dec.fps > 0 ? 1000.0 / dec.fps : 33.33;
@@ -450,8 +468,7 @@ public final class VideoPlayer {
         long lastShownWallMs = 0;
         long frameIdx = 0;
         while (!stopped) {
-            Picture pic = dec.nextFrame();
-            if (pic == null) {
+            if (!dec.readFrame()) {
                 return; // EOF → 外层 barrier 会合后重开
             }
             long ptsMs = (long) (frameIdx * frameDurMs);
@@ -470,14 +487,57 @@ public final class VideoPlayer {
                     lastShownWallMs = 0;
                     continue;
                 }
-                // seek 失败：解码器已死，nextFrame 会返回 null → 外层重开
+                // seek 失败：解码器已死，readFrame 会返回 false → 外层重开
             }
             if (nowMs - lastShownWallMs >= minGap) {
-                uploadFrame(pic);
+                uploadFfmpegFrame(dec);
                 lastShownWallMs = nowMs;
             }
         }
     }
+
+    /**
+     * FFmpeg 帧上传：解码器单遍转换进预分配打包缓冲（0 分配），再走与
+     * uploadFrame 相同的三缓冲暂存。仅视频线程调用。
+     */
+    private void uploadFfmpegFrame(FfmpegPipeDecoder dec) {
+        int cap = Config.MEDIA_VIDEO_MAX_DIM.get();
+        int sw = dec.width;
+        int sh = dec.height;
+        int tw = sw, th = sh;
+        if (sw > cap || sh > cap) {
+            double r = Math.min((double) cap / sw, (double) cap / sh);
+            tw = Math.max(1, (int) (sw * r));
+            th = Math.max(1, (int) (sh * r));
+        }
+        if (fastW != tw || fastH != th || fastArgb == null) {
+            fastArgb = new int[tw * th];
+            fastW = tw;
+            fastH = th;
+        }
+        dec.convertLastInto(fastArgb, tw, th);
+        // 首帧：纹理要在渲染线程注册，把数据交给渲染线程建缓冲（复制一份，本缓冲继续复用）
+        if (nbuf == 0) {
+            if (initArgb == null && staged < 0) {
+                initW = tw;
+                initH = th;
+                initArgb = fastArgb.clone();
+            }
+            return;
+        }
+        // 上一帧还没被渲染线程取走 → 丢这一帧（宁可丢帧也不排队，防止画面永久滞后）
+        if (staged >= 0) {
+            return;
+        }
+        int b = (front + 1) % NBUFS;
+        fillPacked(imgs[b], fastArgb, tw, th);
+        staged = b;
+    }
+
+    /** FFmpeg 单遍转换产出的打包缓冲（仅视频线程访问） */
+    private int[] fastArgb;
+    private int fastW = -1;
+    private int fastH = -1;
 
     /** 等到播放时钟到达 ptsMs（期间处理菜单暂停） */
     private void waitUntil(long ptsMs) {
@@ -759,8 +819,8 @@ public final class VideoPlayer {
         return dst;
     }
 
-    /** 单平面整型盒式平均下采样（0-255 值域，源/目标步长即各自 planeWidth） */
-    private static void boxAvg(byte[] s, int sw, int sh, byte[] d, int dw, int dh) {
+    /** 单平面整型盒式平均下采样（0-255 值域，源/目标步长即各自 planeWidth）。FfmpegPipeDecoder 复用 */
+    static void boxAvg(byte[] s, int sw, int sh, byte[] d, int dw, int dh) {
         for (int dy = 0; dy < dh; dy++) {
             int sy0 = (dy * sh) / dh;
             int sy1 = ((dy + 1) * sh) / dh;
@@ -988,8 +1048,9 @@ public final class VideoPlayer {
                 return;
             }
             SourceDataLine l = (SourceDataLine) AudioSystem.getLine(info);
-            // 小缓冲降低播放延迟，使 line 时钟更接近实际播出位置，改善音画同步
-            l.open(jf, 16384);
+            // 64KB ≈ 370ms@44.1kHz/stereo：缓冲太小时（曾用 16KB≈93ms），GC 或渲染卡顿
+            // 超过 93ms 就会 line underrun → 音频「咔哒/卡顿」。加大缓冲根治。
+            l.open(jf, 65536);
             synchronized (this) {
                 line = l;
             }
