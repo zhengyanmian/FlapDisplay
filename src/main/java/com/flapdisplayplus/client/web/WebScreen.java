@@ -12,6 +12,7 @@
  */
 package com.flapdisplayplus.client.web;
 
+import com.flapdisplayplus.FlapDisplayPlus;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -53,6 +54,8 @@ public class WebScreen extends Screen {
     @Override
     protected void init() {
         super.init();
+        FlapDisplayPlus.LOGGER.info("[Web] 预览界面已打开: {}", webPath);
+        firstKeyLogged = false;
         // 音频焦点：预览开着才出声（v1.0.2：修「没选择网页时还在放声音」）
         if (WebScreenManager.isMcefLoaded()) {
             WebScreenManager.notifyPreviewOpen(webPath);
@@ -63,6 +66,7 @@ public class WebScreen extends Screen {
     @Override
     public void removed() {
         super.removed();
+        FlapDisplayPlus.LOGGER.info("[Web] 预览界面已关闭: {}", webPath);
         if (WebScreenManager.isMcefLoaded()) {
             WebScreenManager.notifyPreviewClosed(webPath);
         }
@@ -105,10 +109,36 @@ public class WebScreen extends Screen {
         }
     }
 
+    // ===== 关闭按钮（v1.0.5：鼠标兜底退出，键盘焦点丢失时也能退出预览） =====
+
+    /** 关闭按钮区域（右上角），宽高单位为 GUI 像素 */
+    private int closeX() {
+        return this.width - 96;
+    }
+
+    private int closeY() {
+        return 4;
+    }
+
+    private boolean hitClose(double mx, double my) {
+        return mx >= closeX() && mx <= closeX() + 92 && my >= closeY() && my <= closeY() + 16;
+    }
+
+    /** 首个到达本界面的按键（诊断日志：键盘事件有没有到达游戏窗口） */
+    private boolean firstKeyLogged;
+
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         // 深色底（纹理未就绪时不至于白屏/透明）
         graphics.fill(drawX(), drawY(), drawX() + drawW(), drawY() + drawH(), 0xFF101010);
+
+        // 右上角关闭按钮（鼠标永远有效，键盘失焦时兜底退出）
+        boolean hover = hitClose(mouseX, mouseY);
+        graphics.fill(closeX(), closeY(), closeX() + 92, closeY() + 16,
+                hover ? 0xFF6A3030 : 0xB0303030);
+        graphics.fill(closeX(), closeY(), closeX() + 92, closeY() + 1, 0xFF555555);
+        graphics.drawCenteredString(this.font, "✕ 关闭 (ESC)",
+                closeX() + 46, closeY() + 4, hover ? 0xFFFFAAAA : 0xFFCCCCCC);
 
         if (!WebScreenManager.isMcefLoaded()) {
             graphics.drawCenteredString(this.font, "网页功能需要安装 MCEF 前置（Modrinth 搜索 mcef）",
@@ -150,6 +180,12 @@ public class WebScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
+        // 关闭按钮优先于网页点击（右上角 92x16 不再转发给浏览器）
+        if (hitClose(mx, my)) {
+            FlapDisplayPlus.LOGGER.info("[Web] 关闭按钮点击退出预览: {}", webPath);
+            this.onClose();
+            return true;
+        }
         if (WebScreenManager.isMcefLoaded()) {
             WebScreenManager.sendMousePress(webPath, toBrowserX(mx), toBrowserY(my), button);
         }
@@ -184,8 +220,13 @@ public class WebScreen extends Screen {
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         // ESC 留给关界面（256 = GLFW_KEY_ESCAPE），其余按键全部转发给浏览器
         if (keyCode == 256) {
+            FlapDisplayPlus.LOGGER.info("[Web] ESC 关闭预览: {}", webPath);
             this.onClose();
             return true;
+        }
+        if (!firstKeyLogged) {
+            firstKeyLogged = true;
+            FlapDisplayPlus.LOGGER.info("[Web] 预览收到首个按键 keyCode={}（键盘事件已到达游戏）", keyCode);
         }
         if (WebScreenManager.isMcefLoaded()) {
             WebScreenManager.sendKeyPress(webPath, keyCode, scanCode, modifiers);
