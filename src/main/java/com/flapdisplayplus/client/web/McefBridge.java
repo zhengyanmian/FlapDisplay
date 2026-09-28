@@ -241,13 +241,16 @@ public final class McefBridge {
     /**
      * CEF 浮点 PCM → Java Sound 播放（每浏览器一个播放状态）。
      *
-     * 【音质三坑】（v1.0.2 修复，对应「声音糊 / 音调不对 / 杂音多」）：
-     * 1. 通道数不能信 onAudioStreamStarted 的 channels 参数——用真实数据形状校准：
-     *    交错 PCM 下 channels = data.length / framesPerChannel，对不上就换线重开。
-     *    通道数错了会让消费速率 ≠ 生产速率 → 背压/欠载 → 音调漂移 + 咔啦杂音。
-     * 2. 采样率不能只信 getAudioParameters——用 pts（纳秒时间轴）实测真实采样率，
-     *    偏差超过 2% 就校准一次（每条流只校准一次，防 pts 异常导致反复抖动）。
-     * 3. 缓冲加大到 ~200ms 并在背压下阻塞写（write 天然背压），避免欠载爆音。
+     * 【音质坑】（独立 dump 分析实锤）fork 声明 STEREO/channels=2，实际交付的却是
+     * 单声道 44100Hz 数据（样本流速只有声明的一半；440Hz 测试音按 mono 解读 =
+     * 442.1Hz ✓，按立体声拆开 = 880Hz ✗）。v1.0.1 把单声道当立体声交错播放 →
+     * 音调翻倍 + 欠载断续（「糊、音调不对、杂音多」）；v1.0.2 按 data.length/
+     * framesPerChannel 校准方向对了但换线时机粗暴。
+     *
+     * 【探测式模式选择】（v1.0.3）开局先攒 ~0.6s 数据包不动，用 pts 时间轴实测
+     * 样本流速（pts 单位实测为毫秒），流速 ≈ rate 判单声道、≈ 2×rate 判立体声交错，
+     * 然后才开线并一次性冲入缓冲。播放中每 2s 复测，漂移 >15%（网站切音轨等）
+     * 自动回到探测模式。任何 fork 怪癖都自适应。
      *
      * 【声音开关】只有网页预览界面（WebScreen）开着的那一个网页出声：
      * 非焦点浏览器的包直接丢弃并关线（保留参数，重新预览时无缝恢复）。
@@ -257,24 +260,31 @@ public final class McefBridge {
 
         private static final class State {
             volatile int rate;
+            /** 当前生效声道数；0 = 探测中 */
             volatile int channels;
+            volatile boolean probing = true;
+            /** 探测期缓冲（包克隆） */
+            final java.util.List<float[]> probeBuf = new java.util.ArrayList<>();
+            int probeSamples;
+            long probeFirstPts = -1;
+            /** 播放期流速监控窗 */
+            long monFirstPts = -1;
+            long monSamples;
             javax.sound.sampled.SourceDataLine line;
-            /** 采样率是否已用 pts 实测校准过（每条流只校准一次） */
-            volatile boolean calibrated;
-            /** 采样率测量窗口：首包 pts（纳秒）与累计帧数 */
-            long windowFirstPts = -1;
-            long windowFrames;
         }
 
-        static void start(org.cef.browser.CefBrowser browser, int sampleRate, int channels) {
+        static void start(org.cef.browser.CefBrowser browser, int sampleRate, int channelsIgnored) {
             State st = STATES.computeIfAbsent(browser, k -> new State());
             st.rate = sampleRate > 0 ? sampleRate : 48000;
-            st.channels = channels <= 0 ? 2 : Math.min(channels, 2);
-            st.calibrated = false;
-            st.windowFirstPts = -1;
-            st.windowFrames = 0;
-            openLine(st);
-            FlapDisplayPlus.LOGGER.info("[Web] 音频开始: {}Hz x{}ch", st.rate, st.channels);
+            st.channels = 0;
+            st.probing = true;
+            st.probeBuf.clear();
+            st.probeSamples = 0;
+            st.probeFirstPts = -1;
+            st.monFirstPts = -1;
+            st.monSamples = 0;
+            closeLine(st);
+            FlapDisplayPlus.LOGGER.info("[Web] 音频开始: {}Hz（探测声道结构中…）", st.rate);
         }
 
         private static void openLine(State st) {
@@ -305,44 +315,10 @@ public final class McefBridge {
             }
         }
 
-        static void feed(org.cef.browser.CefBrowser browser, float[] data, int framesPerChannel, long pts) {
-            State st = STATES.get(browser);
-            if (st == null || framesPerChannel <= 0 || data.length == 0) {
-                return;
-            }
-            // 【声音开关】预览没开 / 开的不是这个网页 → 丢包关线（保留参数可恢复）
-            String focus = AUDIO_FOCUS;
-            String owner = AUDIO_OWNERS.get(browser);
-            if (focus == null || !focus.equals(owner)) {
-                if (st.line != null) {
-                    closeLine(st);
-                }
-                return;
-            }
-            // 重新进入预览后恢复播放线（start 事件不会再发）
-            if (st.line == null) {
-                openLine(st);
-                if (st.line == null) {
-                    return;
-                }
-            }
-            // 【通道数自校准】以真实数据形状为准（交错 PCM：channels = 总样本 / 每通道帧数）
-            if (data.length % framesPerChannel == 0) {
-                int actualCh = data.length / framesPerChannel;
-                if (actualCh >= 1 && actualCh <= 8 && actualCh != st.channels) {
-                    FlapDisplayPlus.LOGGER.info("[Web] 声道数校准: {} → {}（以实际数据为准）",
-                            st.channels, actualCh);
-                    st.channels = actualCh;
-                    openLine(st);
-                    if (st.line == null) {
-                        return;
-                    }
-                }
-            }
-            int channels = st.channels;
-            int samples = Math.min(data.length, framesPerChannel * channels);
-            byte[] out = new byte[samples * 2];
-            for (int i = 0; i < samples; i++) {
+        /** float 样本 → 16-bit LE 并写入播放线（mono 与交错立体声都是样本按序全写） */
+        private static void writePacket(State st, float[] data) {
+            byte[] out = new byte[data.length * 2];
+            for (int i = 0; i < data.length; i++) {
                 float v = data[i];
                 if (v > 1f) {
                     v = 1f;
@@ -357,29 +333,95 @@ public final class McefBridge {
                 st.line.write(out, 0, out.length);
             } catch (Throwable ignored) {
             }
-            // 【采样率校准】pts 为纳秒时间轴：rate = 窗口内总帧数 / 窗口时长。
-            // 每条流只校准一次，防止 pts 语义异常时反复换线。
-            if (!st.calibrated && pts > 0) {
-                if (st.windowFirstPts < 0) {
-                    st.windowFirstPts = pts;
-                    st.windowFrames = framesPerChannel;
-                } else {
-                    st.windowFrames += framesPerChannel;
-                    long dpts = pts - st.windowFirstPts;
-                    if (dpts >= 400_000_000L && st.windowFrames > 0) { // 0.4s 窗口
-                        long measured = st.windowFrames * 1_000_000_000L / dpts;
-                        if (measured >= 16000 && measured <= 192000
-                                && Math.abs(measured - st.rate) * 50 > st.rate) {
-                            FlapDisplayPlus.LOGGER.info("[Web] 采样率校准: {} → {}Hz（pts 实测）",
-                                    st.rate, measured);
-                            st.rate = (int) measured;
-                            st.calibrated = true;
-                            openLine(st);
-                        }
-                        st.windowFirstPts = -1;
-                        st.windowFrames = 0;
-                    }
+        }
+
+        static void feed(org.cef.browser.CefBrowser browser, float[] data, int framesPerChannelIgnored, long pts) {
+            State st = STATES.get(browser);
+            if (st == null || data.length == 0) {
+                return;
+            }
+            // 【声音开关】预览没开 / 开的不是这个网页 → 丢包关线（保留参数可恢复）
+            String focus = AUDIO_FOCUS;
+            String owner = AUDIO_OWNERS.get(browser);
+            if (focus == null || !focus.equals(owner)) {
+                if (st.line != null) {
+                    closeLine(st);
                 }
+                return;
+            }
+
+            if (st.probing) {
+                st.probeBuf.add(data.clone());
+                st.probeSamples += data.length;
+                if (st.probeFirstPts < 0) {
+                    st.probeFirstPts = pts;
+                }
+                long dpts = pts - st.probeFirstPts;
+                if (dpts >= 600) { // pts 实测单位为毫秒（fork）；~0.6s 探测窗
+                    double measured = st.probeSamples * 1000.0 / Math.max(1, dpts);
+                    if (measured > 0 && measured < 8000) {
+                        measured *= 1000; // 若未来 pts 修正为纳秒，折算回毫秒口径
+                    }
+                    int base = st.rate;
+                    int mode;
+                    if (Math.abs(measured - base) < base * 0.08) {
+                        mode = 1; // 单声道：流速 ≈ rate
+                    } else if (Math.abs(measured - 2.0 * base) < base * 0.08) {
+                        mode = 2; // 立体声交错：流速 ≈ 2×rate
+                    } else {
+                        mode = 1; // 无法归类时按单声道兜底
+                    }
+                    st.channels = mode;
+                    openLine(st);
+                    FlapDisplayPlus.LOGGER.info("[Web] 音频模式确定: {}Hz x{}ch（实测流速 {} 样本/s）",
+                            st.rate, mode, (int) measured);
+                    if (st.line != null) {
+                        for (float[] pkt : st.probeBuf) {
+                            writePacket(st, pkt);
+                        }
+                    }
+                    st.probeBuf.clear();
+                    st.probing = false;
+                    st.monFirstPts = pts;
+                    st.monSamples = 0;
+                }
+                return;
+            }
+
+            // 重新进入预览后恢复播放线（start 事件不会再发）
+            if (st.line == null) {
+                if (st.channels <= 0) {
+                    st.probing = true;
+                    return;
+                }
+                openLine(st);
+                if (st.line == null) {
+                    return;
+                }
+            }
+            writePacket(st, data);
+
+            // 播放中每 2s 复测流速，漂移 >15% → 回到探测模式（网站切换音轨等）
+            st.monSamples += data.length;
+            if (st.monFirstPts >= 0 && pts - st.monFirstPts >= 2000) {
+                double m = st.monSamples * 1000.0 / (pts - st.monFirstPts);
+                if (m > 0 && m < 8000) {
+                    m *= 1000;
+                }
+                double expect = st.rate * (double) st.channels;
+                if (expect > 0 && Math.abs(m - expect) > expect * 0.15) {
+                    FlapDisplayPlus.LOGGER.info("[Web] 音频流速漂移（{} → 期望 {}），重新探测",
+                            (int) m, (int) expect);
+                    st.probing = true;
+                    st.probeBuf.clear();
+                    st.probeSamples = 0;
+                    st.probeFirstPts = -1;
+                    st.channels = 0;
+                    closeLine(st);
+                    return;
+                }
+                st.monFirstPts = pts;
+                st.monSamples = 0;
             }
         }
 

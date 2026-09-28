@@ -57,6 +57,10 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
     private final BlockPos cuckooPos;
     private final List<File> mediaFiles = new ArrayList<>();
     /** 通过「添加链接」加入的网络媒体（保存用户粘贴的原始链接） */
+    /** 右键删除的两步确认状态（8 秒内再右键同一格才真正删除；左键取消） */
+    private String pendingDeleteKey;
+    private long pendingDeleteAt;
+
     private final List<String> netItems = new ArrayList<>();
     /** 网格展示用的统一条目：本地文件与网络链接混排，共用一套渲染/点击逻辑 */
     private final List<Entry> entries = new ArrayList<>();
@@ -651,7 +655,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
 
         graphics.drawCenteredString(this.font, "第 " + (page + 1) + " / " + totalPages + " 页",
                 left + w / 2, top + PANEL_H - 14, FdpWidgets.TEXT_DIM);
-        graphics.drawString(this.font, "右键删除网络条目",
+        graphics.drawString(this.font, "右键两次删除网络条目",
                 left + 10, top + PANEL_H - 14, FdpWidgets.TEXT_DIM);
     }
 
@@ -698,7 +702,7 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        // 右键：删除网络条目（链接/网页；本地文件不受列表管理）
+        // 右键：删除网络条目（两步确认，防误触；本地文件不受列表管理）
         if (button == 1) {
             Grid g = grid();
             int start = page * perPage;
@@ -709,24 +713,25 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
                     Entry e = entries.get(idx);
                     if (!e.isNet()) {
                         status = "本地文件请在 flap-media 目录自行删除";
+                        pendingDeleteKey = null;
                         return true;
                     }
                     String key = e.key();
-                    netItems.remove(key);
-                    saveNetItems();
-                    rebuildEntries();
-                    if (key.equals(selectedPath)) {
-                        selectedPath = null;
+                    if (key.equals(pendingDeleteKey)
+                            && System.currentTimeMillis() - pendingDeleteAt < 8000) {
+                        deleteNetEntry(key, e.name());
+                    } else {
+                        // 第一步：标记待删（8 秒内再右键同一格才真正删除）
+                        pendingDeleteKey = key;
+                        pendingDeleteAt = System.currentTimeMillis();
+                        status = "⚠ 再右键一次确认删除：" + e.name() + "（左键取消）";
                     }
-                    if (WebScreenManager.isWebPath(key)) {
-                        WebScreenManager.stop(key); // 连浏览器和声音一起关掉
-                    }
-                    status = "已删除：" + e.name();
                     return true;
                 }
             }
         }
         if (button == 0) {
+            pendingDeleteKey = null; // 左键任意操作取消待删状态
             // 命中判定与绘制共用 grid()：几何只有一个来源，不会再出现「点到的和看到的错位」
             Grid g = grid();
             int start = page * perPage;
@@ -748,5 +753,32 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             }
         }
         return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    /**
+     * 真正执行删除（两步确认后调用）：从列表与 net-list.txt 移除，
+     * 关掉对应浏览器/声音；若该条目正显示在当前布谷鸟时钟的翻牌上，
+     * 同步发包清空服务端媒体（否则翻牌会懒重建浏览器、继续显示已删网页）。
+     */
+    private void deleteNetEntry(String key, String name) {
+        netItems.remove(key);
+        saveNetItems();
+        rebuildEntries();
+        pendingDeleteKey = null;
+        if (WebScreenManager.isWebPath(key)) {
+            WebScreenManager.stop(key); // 连浏览器和声音一起关掉
+        }
+        String extra;
+        if (key.equals(selectedPath)) {
+            // 当前时钟正显示该条目 → 发包清空，翻牌立即恢复原版显示
+            selectedPath = "";
+            sourceType = CuckooClockMedia.SOURCE_IMAGE;
+            PacketDistributor.sendToServer(new SetMediaPacket(
+                    cuckooPos, "", displayMode, CuckooClockMedia.SOURCE_IMAGE));
+            extra = "，翻牌上的它已同步清空";
+        } else {
+            extra = "（若其它翻牌还在显示它，请到对应时钟按清空）";
+        }
+        status = "已删除：" + name + extra;
     }
 }
