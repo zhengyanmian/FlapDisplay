@@ -600,6 +600,27 @@ public final class McefBridge {
                 FlapDisplayPlus.LOGGER.debug("[Web] onPaint 处理失败: {}", t.toString());
             }
         }
+
+        /**
+         * 【鼠标状态铁律】吞掉 CEF 的光标变更通知，绝不让网页改写 MC 窗口的光标模式。
+         *
+         * 实锤（javap MCEFBrowser 字节码）：`MCEFBrowser.setCursor(CefCursorType)` 直接调
+         * `glfwSetInputMode(window, GLFW_CURSOR, ...)`：
+         *   CefCursorType.NONE → GLFW_CURSOR_HIDDEN(212994)；其余 → GLFW_CURSOR_NORMAL(212993)。
+         * 也就是**网页里光标一变（悬停链接、文本框、视频控件…）就把整个游戏窗口的光标
+         * 强行设成隐藏/正常**，完全绕开原版 MouseHandler 的抓取/释放状态机。
+         * 后果正是用户反馈的：「退出预览后 UI 界面里鼠标消失、回到游戏光标出现却没被锁定」
+         * 等一整套光标错乱。
+         *
+         * 本 fork 的 CefBrowserOsr.onCursorChange 只是 `return true`，真正调用 setCursor 的
+         * 是 MCEFBrowser 自己这条链（onCursorChange → dragContext.getVirtualCursor → 监听器
+         * → super）。覆写并直接 return true，就整条链都断了：窗口光标交还原版管理，
+         * 代价只是网页内光标形状不再变化（始终默认箭头），远比鼠标状态错乱划算。
+         */
+        @Override
+        public boolean onCursorChange(CefBrowser browser, int cursorType) {
+            return true;
+        }
     }
 
     /**
@@ -631,6 +652,19 @@ public final class McefBridge {
         if (e == null) {
             e = create(webPath);
         }
+        return e == null ? null : e.loc;
+    }
+
+    /**
+     * 【只读帧】不创建浏览器，浏览器不存在就返回 null。
+     *
+     * 为什么必须有它：媒体选择界面的网格缩略图会对**每个**条目取帧。若那里用 getFrame，
+     * 打开界面/删除条目时就会为每个网页条目现场创建浏览器 → 每个网页都从头加载一遍
+     * （用户反馈的「删除一个网页后其他网页被刷新」根因之一）。列表缩略图只该显示
+     * 「已经存在的浏览器」的实时画面，没打开过的条目显示文字占位即可。
+     */
+    static ResourceLocation peekFrame(String webPath) {
+        Entry e = BROWSERS.get(webPath);
         return e == null ? null : e.loc;
     }
 
@@ -904,7 +938,12 @@ public final class McefBridge {
 
     private static final String TEXT_INPUT_JS_PREFIX =
             "(function(t){try{var el=document.activeElement;" +
+                    // 焦点可能落在同源 iframe 内部（B 站等站点的搜索/评论常在子框架里）：
+                    // 一路钻进最深的活动元素，跨域 iframe 直接放弃（拿不到 contentDocument）。
+                    "var g=0;while(el&&el.tagName==='IFRAME'&&g++<5){" +
+                    "try{var d=el.contentDocument;if(!d||!d.activeElement)break;el=d.activeElement;}catch(e0){break;}}" +
                     "if(!el||el===document.body){el=window.__fdpLastEditable||null;}" +
+                    "if(el&&el.isConnected===false){el=null;}" +
                     "if(!el){return;}" +
                     "var tg=(el.tagName||'').toLowerCase();" +
                     "if(!el.isContentEditable&&tg!=='input'&&tg!=='textarea'){return;}" +

@@ -605,7 +605,11 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
 
             // ===== 缩略图区（上部 48px）：静态图显示图片，GIF 显示当前动画帧 =====
             String path = e.key();
-            ResourceLocation frame = MediaManager.getFrame(path, System.currentTimeMillis());
+            // 【网页条目必须用只读帧】这里对每个条目取帧；若用会「创建浏览器」的 getFrame，
+            // 打开/删除条目时就会把每个网页条目都现场加载一遍（= 「删一个网页，其他网页被刷新」）。
+            ResourceLocation frame = WebScreenManager.isWebPath(path)
+                    ? WebScreenManager.peekFrame(path)
+                    : MediaManager.getFrame(path, System.currentTimeMillis());
             int iw = MediaManager.getTextureWidth(path);
             int ih = MediaManager.getTextureHeight(path);
             if (frame != null && iw > 0 && ih > 0) {
@@ -756,8 +760,31 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
     }
 
     /**
+     * 该布谷鸟时钟当前【已应用】的媒体路径（读方块实体上的同步数据）。
+     *
+     * 删除条目时判断「要不要顺手清空翻牌」必须用这个，而不是 GUI 里的 selectedPath：
+     * selectedPath 只是玩家在列表里**点选**的条目（点击即变），跟时钟实际显示的内容
+     * 常常不一致。曾经用 selectedPath 判断，导致「删掉一个没在显示的条目，
+     * 却把时钟正在显示的那个网页一起清掉（浏览器被关 → 页面状态全丢）」。
+     */
+    private String appliedMediaPath() {
+        try {
+            if (Minecraft.getInstance().level == null) {
+                return "";
+            }
+            BlockEntity be = Minecraft.getInstance().level.getBlockEntity(cuckooPos);
+            if (be instanceof CuckooClockMedia cuckoo) {
+                String p = cuckoo.flapdisplayplus$getMediaPath();
+                return p == null ? "" : p;
+            }
+        } catch (Throwable ignored) {
+        }
+        return "";
+    }
+
+    /**
      * 真正执行删除（两步确认后调用）：从列表与 net-list.txt 移除，
-     * 关掉对应浏览器/声音；若该条目正显示在当前布谷鸟时钟的翻牌上，
+     * 关掉对应浏览器/声音；**仅当该时钟当前确实在显示这个条目时**，
      * 同步发包清空服务端媒体（否则翻牌会懒重建浏览器、继续显示已删网页）。
      */
     private void deleteNetEntry(String key, String name) {
@@ -769,15 +796,17 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
             WebScreenManager.stop(key); // 连浏览器和声音一起关掉
         }
         String extra;
-        if (key.equals(selectedPath)) {
-            // 当前时钟正显示该条目 → 发包清空，翻牌立即恢复原版显示
-            selectedPath = "";
-            sourceType = CuckooClockMedia.SOURCE_IMAGE;
+        if (key.equals(appliedMediaPath())) {
+            // 该时钟当前正显示它 → 发包清空，翻牌立即恢复原版显示
+            if (key.equals(selectedPath)) {
+                selectedPath = "";
+                sourceType = CuckooClockMedia.SOURCE_IMAGE;
+            }
             PacketDistributor.sendToServer(new SetMediaPacket(
                     cuckooPos, "", displayMode, CuckooClockMedia.SOURCE_IMAGE));
             extra = "，翻牌上的它已同步清空";
         } else {
-            extra = "（若其它翻牌还在显示它，请到对应时钟按清空）";
+            extra = "（该时钟当前显示的不是它，未动翻牌）";
         }
         status = "已删除：" + name + extra;
     }

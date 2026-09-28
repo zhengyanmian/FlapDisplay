@@ -56,6 +56,15 @@ public final class WebScreenManager {
         return isMcefLoaded() ? McefBridge.getWidth(webPath) : 0;
     }
 
+    /**
+     * 只读帧：浏览器不存在时返回 null，绝不创建。
+     * 供媒体选择界面的缩略图使用——列表绘制不能触发网页加载（否则每开一次界面、
+     * 每删一个条目，所有网页都会被重新加载一遍）。
+     */
+    public static ResourceLocation peekFrame(String webPath) {
+        return isMcefLoaded() ? McefBridge.peekFrame(webPath) : null;
+    }
+
     public static int getHeight(String webPath) {
         return isMcefLoaded() ? McefBridge.getHeight(webPath) : 0;
     }
