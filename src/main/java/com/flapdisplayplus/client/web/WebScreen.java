@@ -96,6 +96,15 @@ public class WebScreen extends Screen {
         return Math.max(0, Math.min(McefBridge.BROWSER_H - 1, by));
     }
 
+    /** MCEF 下载/初始化是否已判定失败（软依赖守卫：仅在 MCEF 已加载时才触碰该类） */
+    private static boolean mcefInitFailed() {
+        try {
+            return com.cinemamod.mcef.internal.MCEFDownloadListener.INSTANCE.isFailed();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         // 深色底（纹理未就绪时不至于白屏/透明）
@@ -114,6 +123,11 @@ public class WebScreen extends Screen {
             graphics.blit(frame, drawX(), drawY(), drawW(), drawH(),
                     0, 0, McefBridge.BROWSER_W, McefBridge.BROWSER_H,
                     McefBridge.BROWSER_W, McefBridge.BROWSER_H);
+        } else if (mcefInitFailed()) {
+            graphics.drawCenteredString(this.font, "MCEF 初始化失败（多为网络原因，无法连接校验服务器）",
+                    this.width / 2, this.height / 2 - 10, 0xFFFF5555);
+            graphics.drawCenteredString(this.font, "请重启游戏重试；若反复出现请检查网络/代理后重启",
+                    this.width / 2, this.height / 2 + 8, 0xFF888888);
         } else {
             graphics.drawCenteredString(this.font, "浏览器加载中…（首次安装 MCEF 需下载 CEF 运行时）",
                     this.width / 2, this.height / 2, 0xFFAAAAAA);
