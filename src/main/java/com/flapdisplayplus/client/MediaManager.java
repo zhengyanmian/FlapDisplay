@@ -172,12 +172,71 @@ public final class MediaManager {
                 vp.stop();
                 FlapDisplayPlus.LOGGER.info("[Media] 孤儿视频回收（{}ms 无渲染访问）: {}",
                         now - vp.lastRenderAccessMs(), e.getKey());
+            } else if (allDisplaysTooFar(e.getKey())) {
+                // 画面还在被渲染（Create 不剔除视锥），但玩家已走远看不见 → 同样回收
+                it.remove();
+                vp.stop();
+                FlapDisplayPlus.LOGGER.info("[Media] 视频回收（显示点超出 {} 格）: {}",
+                        (int) AUDIO_MAX_DIST, e.getKey());
             }
         }
     }
 
     /** 渲染端超过这个时长不取帧（画面已消失/不可见），就视为孤儿播放器并硬停 */
     private static final long RENDER_STALE_MS = 5000;
+
+    /**
+     * 【距离门限】显示点离玩家超过这个距离（方块）就认为「看不见了」→ 媒体静音/回收。
+     *
+     * 为什么光靠「渲染访问超时」不够：Create 的翻牌渲染**不做视锥剔除**，玩家走远后
+     * renderSafe 照样每帧被调用 → 渲染访问永远新鲜 → 视频/网页的声音在远离后一直响
+     * （用户反馈：「离远了视频就不播放了但音频还在继续」）。
+     * 这条判据与渲染无关，纯粹按玩家与显示点的距离决定，行为可预期。
+     */
+    public static final double AUDIO_MAX_DIST = 48.0;
+
+    /** 玩家到某点的距离是否超过门限 */
+    private static boolean tooFarFrom(double x, double y, double z) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.player == null) {
+            return false;
+        }
+        return mc.player.distanceToSqr(x, y, z) > AUDIO_MAX_DIST * AUDIO_MAX_DIST;
+    }
+
+    /**
+     * 该媒体是否「有显示点、但全都离玩家太远」。
+     * 没有登记显示点（画面本来就没在放）时返回 false，交给渲染访问超时那条路处理。
+     */
+    private static boolean allDisplaysTooFar(String mediaPath) {
+        if (mediaPath == null || mediaPath.isEmpty()) {
+            return false;
+        }
+        boolean any = false;
+        for (BlockPos p : new java.util.ArrayList<>(MediaRenderRegistry.keys())) {
+            MediaRenderRegistry.MediaInfo mi = MediaRenderRegistry.peek(p);
+            if (mi == null) {
+                continue;
+            }
+            String path = mi.mediaPath;
+            boolean same = mediaPath.equals(path);
+            if (!same) {
+                try {
+                    // 网络视频：注册表存原始链接，VIDEOS 的 key 是本地缓存文件路径
+                    same = mediaPath.equals(localPath(path));
+                } catch (Throwable ignored) {
+                }
+            }
+            if (!same) {
+                continue;
+            }
+            any = true;
+            if (!tooFarFrom(p.getX() + 0.5, p.getY() + 0.5, p.getZ() + 0.5)) {
+                return false;
+            }
+        }
+        return any;
+    }
 
     /** 上一刻的游戏菜单暂停状态（视频播放器用） */
     private static boolean lastVideoMenuPaused = false;
@@ -467,12 +526,24 @@ public final class MediaManager {
      * 仅被渲染 Mixin 调用（对应某个布谷鸟时钟选中的视频），绝不会被 GUI 缩略图触发。
      */
     public static ResourceLocation getVideoFrame(String path) {
+        return getVideoFrame(path, null);
+    }
+
+    /**
+     * 游戏内渲染用：获取视频当前播放帧（启动/复用真正会出声的视频播放器）。
+     * 仅被渲染 Mixin 调用（对应某个布谷鸟时钟选中的视频），绝不会被 GUI 缩略图触发。
+     *
+     * @param displayPos 正在渲染的翻牌坐标（网页媒体把它记进心跳，用于「离太远就静音」
+     *                   这条与渲染无关的判据——Create 的翻牌渲染不做视锥剔除，走远了
+     *                   照样每帧取帧，光靠心跳无法判断「已经看不见」）
+     */
+    public static ResourceLocation getVideoFrame(String path, net.minecraft.core.BlockPos displayPos) {
         if (path == null || path.isEmpty()) {
             return null;
         }
         // 网页媒体：取离屏浏览器的实时帧纹理（渲染访问同时充当「仍在显示」的心跳）
         if (WebScreenManager.isWebPath(path)) {
-            WebScreenManager.notifyDisplayed(path); // 心跳：翻牌显示中允许该网页出声
+            WebScreenManager.notifyDisplayed(path, displayPos); // 心跳：翻牌显示中允许该网页出声
             return WebScreenManager.getFrame(path);
         }
         String local = localPath(path);

@@ -118,8 +118,10 @@ public abstract class FlapDisplayRendererMixin {
             return;
         }
         // 当前帧纹理：视频走 getVideoFrame（启动真正出声的播放器，仅限被选中的视频）；
-        // 动图按动画时间取帧（循环），静态图返回固定纹理
-        ResourceLocation frame = MediaManager.getVideoFrame(info.mediaPath);
+        // 动图按动画时间取帧（循环），静态图返回固定纹理。
+        // 带上本翻牌的坐标：网页媒体用它做「显示点离玩家多远」的静音判据
+        // （Create 的翻牌渲染不做视锥剔除，走远了照样取帧，只看心跳无法判断"看不见了"）。
+        ResourceLocation frame = MediaManager.getVideoFrame(info.mediaPath, be.getBlockPos());
         if (frame == null) {
             if (n % 200 == 0) {
                 FlapDisplayPlus.LOGGER.debug("[RenderMedia] frame=null path={}", info.mediaPath);

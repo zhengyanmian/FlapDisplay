@@ -65,10 +65,27 @@ public final class McefBridge {
     private static final Map<org.cef.browser.CefBrowser, String> AUDIO_OWNERS = new ConcurrentHashMap<>();
     /** 当前打开预览的网页（出声者之一；WebScreen init/removed 时更新） */
     private static volatile String AUDIO_FOCUS;
-    /** 网页最近一次被翻牌渲染的时刻（出声者之二：显示在翻牌上=允许出声） */
-    private static final Map<String, Long> DISPLAY_HEARTBEAT = new ConcurrentHashMap<>();
+    /**
+     * 网页在翻牌上的「仍在显示」心跳：最近取帧时刻 + 该翻牌坐标。
+     *
+     * 为什么必须带上坐标：心跳只由渲染路径刷新，而 Create 的翻牌渲染**不做视锥剔除**，
+     * 玩家走远后 renderSafe 照样每帧被调用 → 心跳永远新鲜 → 光靠心跳判断「看不见了」
+     * 完全失效（用户反馈：离远了画面没了、声音还在响）。带上坐标后可以再加一条
+     * 与渲染无关的确定性判据：**播放点离玩家太远即静音**。
+     */
+    private static final class Heartbeat {
+        volatile long ms;
+        volatile int x;
+        volatile int y;
+        volatile int z;
+        volatile boolean hasPos;
+    }
+
+    private static final Map<String, Heartbeat> DISPLAY_HEARTBEAT = new ConcurrentHashMap<>();
     /** 心跳有效期：与视频播放器的孤儿回收同口径（渲染端不再取帧 5 秒后静音） */
     private static final long DISPLAY_ALIVE_MS = 5000;
+    /** 距离门限（方块）：显示点在玩家这个半径之外就静音（常量定义在 MediaManager，两处共用） */
+    private static final double AUDIO_MAX_DIST = com.flapdisplayplus.client.MediaManager.AUDIO_MAX_DIST;
     /** 待应答的认证请求（同一时间最多一个，新的会取消旧的） */
     private static volatile org.cef.callback.CefAuthCallback PENDING_AUTH;
     /** 游戏菜单（ESC）暂停中：冻结画面 + 全部网页静音（MediaManager.tick 边沿触发） */
@@ -378,7 +395,7 @@ public final class McefBridge {
                 }
                 return;
             }
-            // 【声音开关】预览没开这个网页 且 它也不在翻牌上显示 → 丢包关线（保留参数可恢复）
+            // 【声音开关】预览没开这个网页 且 它也不在翻牌上「看得见」 → 丢包关线（保留参数可恢复）
             String focus = AUDIO_FOCUS;
             String owner = AUDIO_OWNERS.get(browser);
             boolean focusOk = focus != null && focus.equals(owner);
@@ -386,6 +403,8 @@ public final class McefBridge {
             if (!focusOk && !displayOk) {
                 if (st.line != null) {
                     closeLine(st);
+                    // 只在「本来在响、现在被掐掉」这一刻打一条，便于现场确认静音原因
+                    FlapDisplayPlus.LOGGER.info("[Web] 音频静音: {}", muteReason(owner));
                 }
                 return;
             }
@@ -428,7 +447,7 @@ public final class McefBridge {
                 return;
             }
 
-            // 重新进入预览后恢复播放线（start 事件不会再发）
+            // 重新进入预览 / 画面重新可见后恢复播放线（start 事件不会再发）
             if (st.line == null) {
                 if (st.channels <= 0) {
                     st.probing = true;
@@ -438,6 +457,7 @@ public final class McefBridge {
                 if (st.line == null) {
                     return;
                 }
+                FlapDisplayPlus.LOGGER.info("[Web] 音频恢复播放（画面重新可见/回到预览）");
             }
             writePacket(st, data);
 
@@ -506,19 +526,71 @@ public final class McefBridge {
     }
 
     /** 翻牌渲染心跳（MediaManager.getVideoFrame 每帧调用）：该网页仍在翻牌上显示 */
-    static void displayHeartbeat(String webPath) {
-        if (webPath != null) {
-            DISPLAY_HEARTBEAT.put(webPath, System.currentTimeMillis());
+    static void displayHeartbeat(String webPath, net.minecraft.core.BlockPos displayPos) {
+        if (webPath == null) {
+            return;
         }
+        Heartbeat hb = DISPLAY_HEARTBEAT.computeIfAbsent(webPath, k -> new Heartbeat());
+        if (displayPos != null) {
+            hb.x = displayPos.getX();
+            hb.y = displayPos.getY();
+            hb.z = displayPos.getZ();
+            hb.hasPos = true;
+        }
+        hb.ms = System.currentTimeMillis();
     }
 
-    /** 该网页是否仍在翻牌上显示（心跳未过期） */
+    /** 该网页是否仍在翻牌上「看得见、听得着」：心跳新鲜 且 显示点离玩家不远 */
     private static boolean isDisplayedOnFlaps(String webPath) {
         if (webPath == null) {
             return false;
         }
-        Long t = DISPLAY_HEARTBEAT.get(webPath);
-        return t != null && System.currentTimeMillis() - t < DISPLAY_ALIVE_MS;
+        Heartbeat hb = DISPLAY_HEARTBEAT.get(webPath);
+        if (hb == null) {
+            return false;
+        }
+        long age = System.currentTimeMillis() - hb.ms;
+        if (age >= DISPLAY_ALIVE_MS) {
+            return false; // 渲染端不再取帧（断电 / 翻牌被拆 / 区块卸载）
+        }
+        if (!hb.hasPos) {
+            return true;
+        }
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc == null || mc.player == null) {
+            return true;
+        }
+        double dx = mc.player.getX() - (hb.x + 0.5);
+        double dy = mc.player.getY() - (hb.y + 0.5);
+        double dz = mc.player.getZ() - (hb.z + 0.5);
+        return dx * dx + dy * dy + dz * dz <= AUDIO_MAX_DIST * AUDIO_MAX_DIST;
+    }
+
+    /**
+     * 音频门控的可读原因（只在状态切换时打日志，便于现场校准距离门限）：
+     * "心跳过期 Xs" / "距离 N 格超过 48" / null=允许出声
+     */
+    private static String muteReason(String webPath) {
+        Heartbeat hb = DISPLAY_HEARTBEAT.get(webPath);
+        if (hb == null) {
+            return "无心跳";
+        }
+        long age = System.currentTimeMillis() - hb.ms;
+        if (age >= DISPLAY_ALIVE_MS) {
+            return String.format("心跳过期 %.1fs（画面未再渲染）", age / 1000.0);
+        }
+        if (!hb.hasPos) {
+            return null;
+        }
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc == null || mc.player == null) {
+            return null;
+        }
+        double d = Math.sqrt(mc.player.distanceToSqr(hb.x + 0.5, hb.y + 0.5, hb.z + 0.5));
+        if (d > AUDIO_MAX_DIST) {
+            return String.format("距离 %.0f 格超过 %.0f（画面已看不见）", d, AUDIO_MAX_DIST);
+        }
+        return null;
     }
 
     /**

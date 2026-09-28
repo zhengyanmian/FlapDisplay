@@ -92,10 +92,11 @@ public final class WebScreenManager {
     /**
      * 翻牌渲染心跳（MediaManager.getVideoFrame 每帧调用）：
      * 该网页此刻正显示在翻牌上 → 允许出声（v1.0.6：上屏出声，不再只有预览出声）。
+     * v1.1.0 起带上翻牌坐标：音频门控除了「心跳新鲜」还要「显示点离玩家不超过阈值」。
      */
-    public static void notifyDisplayed(String webPath) {
+    public static void notifyDisplayed(String webPath, net.minecraft.core.BlockPos displayPos) {
         if (isMcefLoaded()) {
-            McefBridge.displayHeartbeat(webPath);
+            McefBridge.displayHeartbeat(webPath, displayPos);
         }
     }
 
