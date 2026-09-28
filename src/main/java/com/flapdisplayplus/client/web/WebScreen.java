@@ -53,6 +53,19 @@ public class WebScreen extends Screen {
     @Override
     protected void init() {
         super.init();
+        // 音频焦点：预览开着才出声（v1.0.2：修「没选择网页时还在放声音」）
+        if (WebScreenManager.isMcefLoaded()) {
+            WebScreenManager.notifyPreviewOpen(webPath);
+        }
+    }
+
+    /** 被任何界面替换（含 ESC 关闭、打开登录框、切别的网页）时立刻停声 */
+    @Override
+    public void removed() {
+        super.removed();
+        if (WebScreenManager.isMcefLoaded()) {
+            WebScreenManager.notifyPreviewClosed(webPath);
+        }
     }
 
     /** 纹理绘制区域（全屏拉伸铺满——与浏览器 resize 尺寸的换算保持线性一致） */

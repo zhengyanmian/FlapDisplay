@@ -651,6 +651,8 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
 
         graphics.drawCenteredString(this.font, "第 " + (page + 1) + " / " + totalPages + " 页",
                 left + w / 2, top + PANEL_H - 14, FdpWidgets.TEXT_DIM);
+        graphics.drawString(this.font, "右键删除网络条目",
+                left + 10, top + PANEL_H - 14, FdpWidgets.TEXT_DIM);
     }
 
     /**
@@ -696,6 +698,34 @@ public class CuckooClockMediaScreen extends AbstractSimiScreen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        // 右键：删除网络条目（链接/网页；本地文件不受列表管理）
+        if (button == 1) {
+            Grid g = grid();
+            int start = page * perPage;
+            for (int i = 0; i < perPage; i++) {
+                int idx = start + i;
+                if (idx >= entries.size()) break;
+                if (g.hit(i, mouseX, mouseY)) {
+                    Entry e = entries.get(idx);
+                    if (!e.isNet()) {
+                        status = "本地文件请在 flap-media 目录自行删除";
+                        return true;
+                    }
+                    String key = e.key();
+                    netItems.remove(key);
+                    saveNetItems();
+                    rebuildEntries();
+                    if (key.equals(selectedPath)) {
+                        selectedPath = null;
+                    }
+                    if (WebScreenManager.isWebPath(key)) {
+                        WebScreenManager.stop(key); // 连浏览器和声音一起关掉
+                    }
+                    status = "已删除：" + e.name();
+                    return true;
+                }
+            }
+        }
         if (button == 0) {
             // 命中判定与绘制共用 grid()：几何只有一个来源，不会再出现「点到的和看到的错位」
             Grid g = grid();

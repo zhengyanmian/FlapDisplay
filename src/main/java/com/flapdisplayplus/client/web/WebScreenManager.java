@@ -83,6 +83,22 @@ public final class WebScreenManager {
         }
     }
 
+    // ===== 音频焦点（只有预览中的网页出声） =====
+
+    /** 预览界面打开：该网页成为唯一出声者 */
+    public static void notifyPreviewOpen(String webPath) {
+        if (isMcefLoaded()) {
+            McefBridge.previewOpened(webPath);
+        }
+    }
+
+    /** 预览界面关闭/被替换：立刻停声 */
+    public static void notifyPreviewClosed(String webPath) {
+        if (isMcefLoaded()) {
+            McefBridge.previewClosed(webPath);
+        }
+    }
+
     // ===== 预览交互 =====
 
     /** 打开网页预览界面（全屏 Screen：可点击 / 打字 / 滚动；ESC 返回打开前的界面） */

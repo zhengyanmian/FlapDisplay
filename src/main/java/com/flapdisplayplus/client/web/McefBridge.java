@@ -44,9 +44,13 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public final class McefBridge {
 
-    /** 离屏浏览器渲染尺寸（16:9，翻牌显示带多为宽条，长边 1024 与视频默认档一致） */
-    static final int BROWSER_W = 1024;
-    static final int BROWSER_H = 576;
+    /**
+     * 离屏浏览器渲染尺寸（16:9）。
+     * 1600×900：预览界面全屏铺开时只有 ~1.2 倍上采样，文字清晰（1024×576 会被玩家
+     * 抱怨「很糊」）；对翻牌世界渲染同样是纹理源，分辨率只高不低。
+     */
+    static final int BROWSER_W = 1600;
+    static final int BROWSER_H = 900;
 
     /** "web://" 前缀：网页媒体路径约定（服务端原样透传，客户端据此分流） */
     public static final String WEB_PREFIX = "web://";
@@ -57,6 +61,12 @@ public final class McefBridge {
     private static volatile boolean handlersRegistered;
     /** 各浏览器最近一次 getAudioParameters 报告的采样率（fork 的 onAudioStreamStarted 传 null 参数，只能在这里拿） */
     private static final Map<org.cef.browser.CefBrowser, Integer> AUDIO_RATES = new ConcurrentHashMap<>();
+    /** 浏览器 → 所属网页路径（音频焦点判定用） */
+    private static final Map<org.cef.browser.CefBrowser, String> AUDIO_OWNERS = new ConcurrentHashMap<>();
+    /** 当前打开预览的网页（只有它出声；WebScreen init/removed 时更新） */
+    private static volatile String AUDIO_FOCUS;
+    /** 待应答的认证请求（同一时间最多一个，新的会取消旧的） */
+    private static volatile org.cef.callback.CefAuthCallback PENDING_AUTH;
 
     private McefBridge() {
     }
@@ -126,20 +136,58 @@ public final class McefBridge {
                     @Override
                     public void onAudioStreamPacket(org.cef.browser.CefBrowser browser,
                                                     float[] data, int framesPerChannel, long pts) {
-                        WebAudio.feed(browser, data, framesPerChannel);
+                        WebAudio.feed(browser, data, framesPerChannel, pts);
                     }
 
                     @Override
                     public void onAudioStreamStopped(org.cef.browser.CefBrowser browser) {
-                        AUDIO_RATES.remove(browser);
                         WebAudio.stop(browser);
                     }
 
                     @Override
                     public void onAudioStreamError(org.cef.browser.CefBrowser browser, String error) {
                         FlapDisplayPlus.LOGGER.warn("[Web] 音频流错误: {}", error);
-                        AUDIO_RATES.remove(browser);
                         WebAudio.stop(browser);
+                    }
+                });
+                // 【认证登录】HTTP 401 Basic/Digest 认证：fork 的 OSR 模式弹不出原生登录框，
+                // 页面会直接显示 401。getAuthCredentials 会委派到 addRequestHandler 注册的
+                // handler（javap 核实），这里弹一个 MC 内的账号/密码界面，异步 Continue。
+                cc.addRequestHandler(new org.cef.handler.CefRequestHandlerAdapter() {
+                    @Override
+                    public boolean getAuthCredentials(org.cef.browser.CefBrowser browser, String requestedUrl,
+                                                      boolean isProxy, String host, int port, String realm,
+                                                      String scheme, org.cef.callback.CefAuthCallback callback) {
+                        String what = (isProxy ? "代理认证" : "网站登录") + " · " + host
+                                + (port > 0 ? ":" + port : "")
+                                + (realm != null && !realm.isEmpty() ? "（" + realm + "）" : "");
+                        // 同一时间只保留一个待认证请求；新的来了先取消旧的，避免悬挂
+                        org.cef.callback.CefAuthCallback prev = PENDING_AUTH;
+                        if (prev != null) {
+                            try {
+                                prev.cancel();
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                        PENDING_AUTH = callback;
+                        Minecraft.getInstance().execute(() -> {
+                            try {
+                                net.minecraft.client.gui.screens.Screen cur = Minecraft.getInstance().screen;
+                                Minecraft.getInstance().setScreen(new WebAuthScreen(what, cur, cred -> {
+                                    PENDING_AUTH = null;
+                                    if (cred == null) {
+                                        callback.cancel();
+                                    } else {
+                                        callback.Continue(cred[0], cred[1]);
+                                    }
+                                }));
+                            } catch (Throwable t) {
+                                FlapDisplayPlus.LOGGER.warn("[Web] 打开登录界面失败: {}", t.toString());
+                                PENDING_AUTH = null;
+                                callback.cancel();
+                            }
+                        });
+                        return true;
                     }
                 });
                 handlersRegistered = true;
@@ -191,38 +239,107 @@ public final class McefBridge {
                     "})();";
 
     /**
-     * CEF 浮点 PCM → Java Sound 播放（每浏览器一条 SourceDataLine）。
-     * write 的天然背压防止缓冲无限增长；CEF 音频线程阻塞可接受。
+     * CEF 浮点 PCM → Java Sound 播放（每浏览器一个播放状态）。
+     *
+     * 【音质三坑】（v1.0.2 修复，对应「声音糊 / 音调不对 / 杂音多」）：
+     * 1. 通道数不能信 onAudioStreamStarted 的 channels 参数——用真实数据形状校准：
+     *    交错 PCM 下 channels = data.length / framesPerChannel，对不上就换线重开。
+     *    通道数错了会让消费速率 ≠ 生产速率 → 背压/欠载 → 音调漂移 + 咔啦杂音。
+     * 2. 采样率不能只信 getAudioParameters——用 pts（纳秒时间轴）实测真实采样率，
+     *    偏差超过 2% 就校准一次（每条流只校准一次，防 pts 异常导致反复抖动）。
+     * 3. 缓冲加大到 ~200ms 并在背压下阻塞写（write 天然背压），避免欠载爆音。
+     *
+     * 【声音开关】只有网页预览界面（WebScreen）开着的那一个网页出声：
+     * 非焦点浏览器的包直接丢弃并关线（保留参数，重新预览时无缝恢复）。
      */
     private static final class WebAudio {
-        private static final Map<org.cef.browser.CefBrowser, javax.sound.sampled.SourceDataLine> LINES =
-                new ConcurrentHashMap<>();
+        private static final Map<org.cef.browser.CefBrowser, State> STATES = new ConcurrentHashMap<>();
+
+        private static final class State {
+            volatile int rate;
+            volatile int channels;
+            javax.sound.sampled.SourceDataLine line;
+            /** 采样率是否已用 pts 实测校准过（每条流只校准一次） */
+            volatile boolean calibrated;
+            /** 采样率测量窗口：首包 pts（纳秒）与累计帧数 */
+            long windowFirstPts = -1;
+            long windowFrames;
+        }
 
         static void start(org.cef.browser.CefBrowser browser, int sampleRate, int channels) {
-            stop(browser);
+            State st = STATES.computeIfAbsent(browser, k -> new State());
+            st.rate = sampleRate > 0 ? sampleRate : 48000;
+            st.channels = channels <= 0 ? 2 : Math.min(channels, 2);
+            st.calibrated = false;
+            st.windowFirstPts = -1;
+            st.windowFrames = 0;
+            openLine(st);
+            FlapDisplayPlus.LOGGER.info("[Web] 音频开始: {}Hz x{}ch", st.rate, st.channels);
+        }
+
+        private static void openLine(State st) {
+            closeLine(st);
             try {
-                if (channels <= 0 || channels > 2) {
-                    channels = 2; // 只处理单声道/立体声，其它按立体声处理
-                }
                 javax.sound.sampled.AudioFormat fmt =
-                        new javax.sound.sampled.AudioFormat(sampleRate, 16, channels, true, false);
+                        new javax.sound.sampled.AudioFormat(st.rate, 16, st.channels, true, false);
                 javax.sound.sampled.SourceDataLine line =
                         javax.sound.sampled.AudioSystem.getSourceDataLine(fmt);
-                line.open(fmt, Math.max(8192, sampleRate * channels * 2 / 5)); // ~100ms 缓冲
+                line.open(fmt, Math.max(16384, st.rate * st.channels * 2 / 5)); // ~200ms 缓冲
                 line.start();
-                LINES.put(browser, line);
-                FlapDisplayPlus.LOGGER.info("[Web] 音频开始: {}Hz x{}ch", sampleRate, channels);
+                st.line = line;
             } catch (Throwable t) {
                 FlapDisplayPlus.LOGGER.warn("[Web] 音频线打开失败: {}", t.toString());
+                st.line = null;
             }
         }
 
-        static void feed(org.cef.browser.CefBrowser browser, float[] data, int framesPerChannel) {
-            javax.sound.sampled.SourceDataLine line = LINES.get(browser);
-            if (line == null || framesPerChannel <= 0) {
+        private static void closeLine(State st) {
+            javax.sound.sampled.SourceDataLine line = st.line;
+            st.line = null;
+            if (line != null) {
+                try {
+                    line.stop();
+                    line.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        static void feed(org.cef.browser.CefBrowser browser, float[] data, int framesPerChannel, long pts) {
+            State st = STATES.get(browser);
+            if (st == null || framesPerChannel <= 0 || data.length == 0) {
                 return;
             }
-            int channels = line.getFormat().getChannels();
+            // 【声音开关】预览没开 / 开的不是这个网页 → 丢包关线（保留参数可恢复）
+            String focus = AUDIO_FOCUS;
+            String owner = AUDIO_OWNERS.get(browser);
+            if (focus == null || !focus.equals(owner)) {
+                if (st.line != null) {
+                    closeLine(st);
+                }
+                return;
+            }
+            // 重新进入预览后恢复播放线（start 事件不会再发）
+            if (st.line == null) {
+                openLine(st);
+                if (st.line == null) {
+                    return;
+                }
+            }
+            // 【通道数自校准】以真实数据形状为准（交错 PCM：channels = 总样本 / 每通道帧数）
+            if (data.length % framesPerChannel == 0) {
+                int actualCh = data.length / framesPerChannel;
+                if (actualCh >= 1 && actualCh <= 8 && actualCh != st.channels) {
+                    FlapDisplayPlus.LOGGER.info("[Web] 声道数校准: {} → {}（以实际数据为准）",
+                            st.channels, actualCh);
+                    st.channels = actualCh;
+                    openLine(st);
+                    if (st.line == null) {
+                        return;
+                    }
+                }
+            }
+            int channels = st.channels;
             int samples = Math.min(data.length, framesPerChannel * channels);
             byte[] out = new byte[samples * 2];
             for (int i = 0; i < samples; i++) {
@@ -237,20 +354,61 @@ public final class McefBridge {
                 out[2 * i + 1] = (byte) (s >> 8);
             }
             try {
-                line.write(out, 0, out.length);
+                st.line.write(out, 0, out.length);
             } catch (Throwable ignored) {
+            }
+            // 【采样率校准】pts 为纳秒时间轴：rate = 窗口内总帧数 / 窗口时长。
+            // 每条流只校准一次，防止 pts 语义异常时反复换线。
+            if (!st.calibrated && pts > 0) {
+                if (st.windowFirstPts < 0) {
+                    st.windowFirstPts = pts;
+                    st.windowFrames = framesPerChannel;
+                } else {
+                    st.windowFrames += framesPerChannel;
+                    long dpts = pts - st.windowFirstPts;
+                    if (dpts >= 400_000_000L && st.windowFrames > 0) { // 0.4s 窗口
+                        long measured = st.windowFrames * 1_000_000_000L / dpts;
+                        if (measured >= 16000 && measured <= 192000
+                                && Math.abs(measured - st.rate) * 50 > st.rate) {
+                            FlapDisplayPlus.LOGGER.info("[Web] 采样率校准: {} → {}Hz（pts 实测）",
+                                    st.rate, measured);
+                            st.rate = (int) measured;
+                            st.calibrated = true;
+                            openLine(st);
+                        }
+                        st.windowFirstPts = -1;
+                        st.windowFrames = 0;
+                    }
+                }
             }
         }
 
+        /** 流停止（页面暂停/切走）：关线但保留参数，供重新预览时恢复 */
         static void stop(org.cef.browser.CefBrowser browser) {
-            javax.sound.sampled.SourceDataLine line = LINES.remove(browser);
-            if (line != null) {
-                try {
-                    line.stop();
-                    line.close();
-                } catch (Throwable ignored) {
-                }
+            State st = STATES.get(browser);
+            if (st != null) {
+                closeLine(st);
             }
+        }
+
+        /** 浏览器销毁：彻底清理 */
+        static void dispose(org.cef.browser.CefBrowser browser) {
+            State st = STATES.remove(browser);
+            if (st != null) {
+                closeLine(st);
+            }
+        }
+    }
+
+    /** WebScreen 打开预览：该网页获得音频焦点（唯一出声者） */
+    static void previewOpened(String webPath) {
+        AUDIO_FOCUS = webPath;
+    }
+
+    /** WebScreen 关闭/被替换：释放音频焦点（声音立刻停） */
+    static void previewClosed(String webPath) {
+        if (webPath == null || webPath.equals(AUDIO_FOCUS)) {
+            AUDIO_FOCUS = null;
         }
     }
 
@@ -385,11 +543,41 @@ public final class McefBridge {
             return null;
         }
         BROWSERS.put(webPath, e);
+        AUDIO_OWNERS.put(e.browser, webPath);
         FlapDisplayPlus.LOGGER.info("[Web] 打开网页: {} → {}", webPath, url);
         return e;
     }
 
     // ===== 帧上传（渲染线程） =====
+
+    /** NativeImage.pixels 字段（反射缓存；NeoForge 1.21.1 运行时为 mojmap 官方名，拿不到走逐像素兜底） */
+    private static volatile java.lang.reflect.Field PIXELS_FIELD;
+    private static volatile boolean PIXELS_FIELD_TRIED;
+
+    private static long pixelsPointer(NativeImage img) {
+        if (!PIXELS_FIELD_TRIED) {
+            synchronized (McefBridge.class) {
+                if (!PIXELS_FIELD_TRIED) {
+                    try {
+                        java.lang.reflect.Field f = NativeImage.class.getDeclaredField("pixels");
+                        f.setAccessible(true);
+                        PIXELS_FIELD = f;
+                    } catch (Throwable ignored) {
+                    }
+                    PIXELS_FIELD_TRIED = true;
+                }
+            }
+        }
+        java.lang.reflect.Field f = PIXELS_FIELD;
+        if (f == null) {
+            return 0;
+        }
+        try {
+            return f.getLong(img);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
 
     /** 把 onPaint 截获的待上传帧写入 DynamicTexture 并 upload（MediaManager.tick 每刻调用） */
     static void tick() {
@@ -409,10 +597,17 @@ public final class McefBridge {
                 int w = e.pendingW;
                 int h = e.pendingH;
                 int[] px = e.pending;
-                for (int y = 0; y < h; y++) {
-                    int row = y * w;
-                    for (int x = 0; x < w; x++) {
-                        img.setPixelRGBA(x, y, px[row + x]);
+                long ptr = pixelsPointer(img);
+                if (ptr != 0) {
+                    // 快路径：直写 NativeImage 的本地内存（底层与 setPixelRGBA 同一布局）
+                    java.nio.IntBuffer ib = org.lwjgl.system.MemoryUtil.memIntBuffer(ptr, w * h);
+                    ib.put(px);
+                } else {
+                    for (int y = 0; y < h; y++) {
+                        int row = y * w;
+                        for (int x = 0; x < w; x++) {
+                            img.setPixelRGBA(x, y, px[row + x]);
+                        }
                     }
                 }
                 e.texture.upload();
@@ -431,8 +626,9 @@ public final class McefBridge {
         }
         try {
             if (e.browser != null) {
+                AUDIO_OWNERS.remove(e.browser);
                 AUDIO_RATES.remove(e.browser);
-                WebAudio.stop(e.browser);
+                WebAudio.dispose(e.browser);
                 e.browser.close();
             }
         } catch (Throwable t) {
