@@ -69,6 +69,16 @@ public final class WebScreenManager {
 
     // ===== 生命周期 =====
 
+    /**
+     * 翻牌渲染心跳（MediaManager.getVideoFrame 每帧调用）：
+     * 该网页此刻正显示在翻牌上 → 允许出声（v1.0.6：上屏出声，不再只有预览出声）。
+     */
+    public static void notifyDisplayed(String webPath) {
+        if (isMcefLoaded()) {
+            McefBridge.displayHeartbeat(webPath);
+        }
+    }
+
     /** 关闭网页并释放浏览器与纹理（媒体被清除 / 不再被任何翻牌引用时） */
     public static void stop(String webPath) {
         if (isMcefLoaded()) {

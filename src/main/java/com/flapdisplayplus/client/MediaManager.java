@@ -146,6 +146,14 @@ public final class MediaManager {
     public static void tick() {
         // FFmpeg 缺失时自动下载一次（幂等；探测走缓存，每刻调用开销可忽略）
         FfmpegAutoDownloader.ensureDownloaded();
+        // 【焦点诊断】窗口失焦正是「鼠标脱离锁定显示在屏幕上」的根源（原版逻辑：
+        // isWindowActive=false → 释放鼠标，单人模式还会弹暂停菜单）。
+        // 记录每次变化的时刻，与用户反馈的异常时刻对账，即可锁定是谁在抢焦点。
+        boolean windowActive = net.minecraft.client.Minecraft.getInstance().isWindowActive();
+        if (windowActive != lastWindowActive) {
+            lastWindowActive = windowActive;
+            FlapDisplayPlus.LOGGER.info("[FDP] 游戏窗口{}", windowActive ? "获得焦点" : "失去焦点（此时鼠标会解锁）");
+        }
         sweepRemovedDisplays();
         // 网页纹理帧上传（渲染线程；无网页媒体时空转）
         WebScreenManager.tick();
@@ -180,6 +188,9 @@ public final class MediaManager {
 
     /** 上一刻的游戏菜单暂停状态（用于边沿触发暂停/恢复） */
     private static boolean lastMenuPaused = false;
+
+    /** 上一刻窗口焦点状态（焦点诊断日志用，边沿触发） */
+    private static boolean lastWindowActive = true;
 
     /**
      * 游戏是否处于暂停菜单（ESC）。
@@ -439,6 +450,7 @@ public final class MediaManager {
         }
         // 网页媒体：取离屏浏览器的实时帧纹理（渲染访问同时充当「仍在显示」的心跳）
         if (WebScreenManager.isWebPath(path)) {
+            WebScreenManager.notifyDisplayed(path); // 心跳：翻牌显示中允许该网页出声
             return WebScreenManager.getFrame(path);
         }
         String local = localPath(path);

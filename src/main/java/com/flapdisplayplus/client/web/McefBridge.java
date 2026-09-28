@@ -63,8 +63,12 @@ public final class McefBridge {
     private static final Map<org.cef.browser.CefBrowser, Integer> AUDIO_RATES = new ConcurrentHashMap<>();
     /** 浏览器 → 所属网页路径（音频焦点判定用） */
     private static final Map<org.cef.browser.CefBrowser, String> AUDIO_OWNERS = new ConcurrentHashMap<>();
-    /** 当前打开预览的网页（只有它出声；WebScreen init/removed 时更新） */
+    /** 当前打开预览的网页（出声者之一；WebScreen init/removed 时更新） */
     private static volatile String AUDIO_FOCUS;
+    /** 网页最近一次被翻牌渲染的时刻（出声者之二：显示在翻牌上=允许出声） */
+    private static final Map<String, Long> DISPLAY_HEARTBEAT = new ConcurrentHashMap<>();
+    /** 心跳有效期：与视频播放器的孤儿回收同口径（渲染端不再取帧 5 秒后静音） */
+    private static final long DISPLAY_ALIVE_MS = 5000;
     /** 待应答的认证请求（同一时间最多一个，新的会取消旧的） */
     private static volatile org.cef.callback.CefAuthCallback PENDING_AUTH;
 
@@ -170,6 +174,7 @@ public final class McefBridge {
                             }
                         }
                         PENDING_AUTH = callback;
+                        FlapDisplayPlus.LOGGER.info("[Web] 收到认证请求，弹出登录界面: {}", what);
                         Minecraft.getInstance().execute(() -> {
                             try {
                                 net.minecraft.client.gui.screens.Screen cur = Minecraft.getInstance().screen;
@@ -252,8 +257,9 @@ public final class McefBridge {
      * 然后才开线并一次性冲入缓冲。播放中每 2s 复测，漂移 >15%（网站切音轨等）
      * 自动回到探测模式。任何 fork 怪癖都自适应。
      *
-     * 【声音开关】只有网页预览界面（WebScreen）开着的那一个网页出声：
-     * 非焦点浏览器的包直接丢弃并关线（保留参数，重新预览时无缝恢复）。
+     * 【声音开关】（v1.0.6）两条独立出声通道：①网页预览界面（WebScreen）开着的那一个；
+     * ②正在翻牌上显示的网页（渲染心跳保活，断电/离开视野 5 秒后静音，与视频孤儿回收同口径）。
+     * 两者都不满足时丢包关线（保留参数，恢复出声条件后无缝续播）。
      */
     private static final class WebAudio {
         private static final Map<org.cef.browser.CefBrowser, State> STATES = new ConcurrentHashMap<>();
@@ -340,10 +346,12 @@ public final class McefBridge {
             if (st == null || data.length == 0) {
                 return;
             }
-            // 【声音开关】预览没开 / 开的不是这个网页 → 丢包关线（保留参数可恢复）
+            // 【声音开关】预览没开这个网页 且 它也不在翻牌上显示 → 丢包关线（保留参数可恢复）
             String focus = AUDIO_FOCUS;
             String owner = AUDIO_OWNERS.get(browser);
-            if (focus == null || !focus.equals(owner)) {
+            boolean focusOk = focus != null && focus.equals(owner);
+            boolean displayOk = isDisplayedOnFlaps(owner);
+            if (!focusOk && !displayOk) {
                 if (st.line != null) {
                     closeLine(st);
                 }
@@ -442,16 +450,36 @@ public final class McefBridge {
         }
     }
 
-    /** WebScreen 打开预览：该网页获得音频焦点（唯一出声者） */
+    /** WebScreen 打开预览：该网页获得音频焦点 */
     static void previewOpened(String webPath) {
         AUDIO_FOCUS = webPath;
     }
 
-    /** WebScreen 关闭/被替换：释放音频焦点（声音立刻停） */
+    /**
+     * WebScreen 关闭/被替换：释放音频焦点。
+     * 若该网页此刻仍显示在翻牌上（心跳未过期），声音继续——
+     * v1.0.6 起上屏出声与预览出声是两条独立通道。
+     */
     static void previewClosed(String webPath) {
         if (webPath == null || webPath.equals(AUDIO_FOCUS)) {
             AUDIO_FOCUS = null;
         }
+    }
+
+    /** 翻牌渲染心跳（MediaManager.getVideoFrame 每帧调用）：该网页仍在翻牌上显示 */
+    static void displayHeartbeat(String webPath) {
+        if (webPath != null) {
+            DISPLAY_HEARTBEAT.put(webPath, System.currentTimeMillis());
+        }
+    }
+
+    /** 该网页是否仍在翻牌上显示（心跳未过期） */
+    private static boolean isDisplayedOnFlaps(String webPath) {
+        if (webPath == null) {
+            return false;
+        }
+        Long t = DISPLAY_HEARTBEAT.get(webPath);
+        return t != null && System.currentTimeMillis() - t < DISPLAY_ALIVE_MS;
     }
 
     /** 一个网页 = 一个离屏浏览器 + 一张自建 DynamicTexture */
@@ -663,6 +691,7 @@ public final class McefBridge {
 
     static void close(String webPath) {
         Entry e = BROWSERS.remove(webPath);
+        DISPLAY_HEARTBEAT.remove(webPath);
         if (e == null) {
             return;
         }
