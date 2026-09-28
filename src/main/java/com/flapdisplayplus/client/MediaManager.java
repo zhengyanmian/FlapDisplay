@@ -157,12 +157,18 @@ public final class MediaManager {
         sweepRemovedDisplays();
         // 网页纹理帧上传（渲染线程；无网页媒体时空转）
         WebScreenManager.tick();
-        if (VIDEOS.isEmpty()) {
-            return;
-        }
+        // 游戏菜单（ESC）暂停边沿：视频与网页媒体共用同一个信号。
+        // 注意必须放在 VIDEOS 判空之前——没有视频时网页媒体也需要收到暂停通知。
         boolean menuPaused = isGameMenuPaused();
         if (menuPaused != lastMenuPaused) {
             lastMenuPaused = menuPaused;
+            WebScreenManager.setGamePaused(menuPaused);
+        }
+        if (VIDEOS.isEmpty()) {
+            return;
+        }
+        if (menuPaused != lastVideoMenuPaused) {
+            lastVideoMenuPaused = menuPaused;
             for (VideoPlayer vp : VIDEOS.values()) {
                 vp.setMenuPaused(menuPaused);
             }
@@ -186,8 +192,11 @@ public final class MediaManager {
     /** 渲染端超过这个时长不取帧（画面已消失/不可见），就视为孤儿播放器并硬停 */
     private static final long RENDER_STALE_MS = 5000;
 
-    /** 上一刻的游戏菜单暂停状态（用于边沿触发暂停/恢复） */
+    /** 上一刻的游戏菜单暂停状态（网页媒体用；与 lastVideoMenuPaused 分开边沿，互不干扰） */
     private static boolean lastMenuPaused = false;
+
+    /** 上一刻的游戏菜单暂停状态（视频播放器用） */
+    private static boolean lastVideoMenuPaused = false;
 
     /** 上一刻窗口焦点状态（焦点诊断日志用，边沿触发） */
     private static boolean lastWindowActive = true;

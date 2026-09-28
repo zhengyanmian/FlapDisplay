@@ -71,6 +71,21 @@ public final class McefBridge {
     private static final long DISPLAY_ALIVE_MS = 5000;
     /** 待应答的认证请求（同一时间最多一个，新的会取消旧的） */
     private static volatile org.cef.callback.CefAuthCallback PENDING_AUTH;
+    /** 游戏菜单（ESC）暂停中：冻结画面 + 全部网页静音（MediaManager.tick 边沿触发） */
+    private static volatile boolean GAME_PAUSED;
+
+    /**
+     * 【暂停媒体 JS】游戏 ESC 暂停时把页面里的 video/audio 全部 pause()。
+     * CEF fork 没有暴露 wasHidden/暂停接口（javap 核实 CefBrowser_N 全部方法），
+     * 只能在页面侧暂停媒体——B 站等主流站点都是标准 HTML5 播放器，覆盖绝大多数场景。
+     */
+    private static final String PAUSE_MEDIA_JS =
+            "(function(){try{document.querySelectorAll('video,audio').forEach(function(v){"
+                    + "try{v.pause();}catch(e){}});}catch(e){}})();";
+    /** 【恢复媒体 JS】回到游戏时恢复播放（play() 返回 Promise，吞掉自动播放被拒的 rejection） */
+    private static final String RESUME_MEDIA_JS =
+            "(function(){try{document.querySelectorAll('video,audio').forEach(function(v){"
+                    + "try{var p=v.play();if(p&&p.catch)p.catch(function(){});}catch(e){}});}catch(e){}})();";
 
     private McefBridge() {
     }
@@ -260,6 +275,10 @@ public final class McefBridge {
      * 【声音开关】（v1.0.6）两条独立出声通道：①网页预览界面（WebScreen）开着的那一个；
      * ②正在翻牌上显示的网页（渲染心跳保活，断电/离开视野 5 秒后静音，与视频孤儿回收同口径）。
      * 两者都不满足时丢包关线（保留参数，恢复出声条件后无缝续播）。
+     *
+     * 【游戏菜单暂停】（v1.0.7）ESC 打开游戏菜单（单人暂停 / 任意模式的 PauseScreen）时
+     * 三处一起冻结：音频线关闭 + 纹理不上传（画面停在最后一帧）+ 页面侧 JS 暂停
+     * video/audio（否则恢复时内容已跑远）。回到游戏反向恢复。
      */
     private static final class WebAudio {
         private static final Map<org.cef.browser.CefBrowser, State> STATES = new ConcurrentHashMap<>();
@@ -344,6 +363,13 @@ public final class McefBridge {
         static void feed(org.cef.browser.CefBrowser browser, float[] data, int framesPerChannelIgnored, long pts) {
             State st = STATES.get(browser);
             if (st == null || data.length == 0) {
+                return;
+            }
+            // 【游戏菜单暂停】ESC 暂停期间全部静音（CEF 可能仍在推已缓冲的包）
+            if (GAME_PAUSED) {
+                if (st.line != null) {
+                    closeLine(st);
+                }
                 return;
             }
             // 【声音开关】预览没开这个网页 且 它也不在翻牌上显示 → 丢包关线（保留参数可恢复）
@@ -441,6 +467,13 @@ public final class McefBridge {
             }
         }
 
+        /** 游戏菜单暂停：全部关线立刻静音（feed 里也不会再开线） */
+        static void pauseAll() {
+            for (State st : STATES.values()) {
+                closeLine(st);
+            }
+        }
+
         /** 浏览器销毁：彻底清理 */
         static void dispose(org.cef.browser.CefBrowser browser) {
             State st = STATES.remove(browser);
@@ -480,6 +513,37 @@ public final class McefBridge {
         }
         Long t = DISPLAY_HEARTBEAT.get(webPath);
         return t != null && System.currentTimeMillis() - t < DISPLAY_ALIVE_MS;
+    }
+
+    /**
+     * 【游戏菜单暂停】（v1.0.7）ESC 打开游戏菜单时：冻结画面 + 全部网页静音。
+     * <ul>
+     * <li>声音：WebAudio 立刻关线，feed 里也丢包（CEF 仍可能在推送已缓冲的音频包）</li>
+     * <li>画面：tick 里跳过纹理上传，翻牌停在最后一帧（CEF 照画，但不进纹理）</li>
+     * <li>内容：页面侧 JS 暂停 video/audio（否则恢复时画面已跑远）</li>
+     * </ul>
+     */
+    static void setGamePaused(boolean paused) {
+        if (GAME_PAUSED == paused) {
+            return;
+        }
+        GAME_PAUSED = paused;
+        String js = paused ? PAUSE_MEDIA_JS : RESUME_MEDIA_JS;
+        for (Entry e : BROWSERS.values()) {
+            FdpWebBrowser b = e.browser;
+            if (b == null) {
+                continue;
+            }
+            try {
+                b.executeJavaScript(js, b.getURL(), 1);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (paused) {
+            WebAudio.pauseAll();
+        }
+        FlapDisplayPlus.LOGGER.info("[Web] 游戏菜单{}：网页画面与声音{}", paused ? "暂停" : "恢复",
+                paused ? "冻结" : "继续");
     }
 
     /** 一个网页 = 一个离屏浏览器 + 一张自建 DynamicTexture */
@@ -652,6 +716,10 @@ public final class McefBridge {
     /** 把 onPaint 截获的待上传帧写入 DynamicTexture 并 upload（MediaManager.tick 每刻调用） */
     static void tick() {
         if (BROWSERS.isEmpty()) {
+            return;
+        }
+        // 【游戏菜单暂停】冻结画面：不消费 pending，纹理保持最后一帧（CEF 仍在画，只是不进纹理）
+        if (GAME_PAUSED) {
             return;
         }
         for (Entry e : BROWSERS.values()) {

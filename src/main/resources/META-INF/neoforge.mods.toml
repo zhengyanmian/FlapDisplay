@@ -4,7 +4,7 @@ license="MIT"
 
 [[mods]]
 modId="flapdisplayplus"
-version="1.0.6"
+version="1.0.7"
 displayName="翻牌万象 FlapDisplayPlus"
 authors="枕燕眠"
 logoFile="flapdisplayplus_logo.png"

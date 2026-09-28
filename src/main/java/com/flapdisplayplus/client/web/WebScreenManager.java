@@ -67,6 +67,17 @@ public final class WebScreenManager {
         }
     }
 
+    /**
+     * 游戏菜单（ESC）暂停/恢复（MediaManager.tick 边沿触发）。
+     * 暂停时：冻结网页纹理（翻牌画面停在最后一帧）+ 全部网页静音 + JS 暂停页面媒体；
+     * 恢复时反向。单人/联机/服务器按 ESC 打开的是同一个 PauseScreen，行为一致。
+     */
+    public static void setGamePaused(boolean paused) {
+        if (isMcefLoaded()) {
+            McefBridge.setGamePaused(paused);
+        }
+    }
+
     // ===== 生命周期 =====
 
     /**
