@@ -180,4 +180,14 @@ public final class WebScreenManager {
             McefBridge.keyTyped(webPath, chr, modifiers);
         }
     }
+
+    /**
+     * 把一段文本注入页面焦点元素（中文 / IME 输入）。
+     * 非 ASCII 字符走原生键路径会被 Windows 原生层静默丢弃，必须用 JS 注入。
+     */
+    public static void sendTextInput(String webPath, String text) {
+        if (isMcefLoaded()) {
+            McefBridge.sendTextInput(webPath, text);
+        }
+    }
 }

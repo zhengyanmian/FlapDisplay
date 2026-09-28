@@ -245,7 +245,17 @@ public class WebScreen extends Screen {
     @Override
     public boolean charTyped(char chr, int modifiers) {
         if (WebScreenManager.isMcefLoaded()) {
-            WebScreenManager.sendKeyTyped(webPath, chr, modifiers);
+            if (chr < 0x20) {
+                // 控制字符（回车/退格等）由 keyPressed 路径处理，char 通道直接忽略
+                return true;
+            }
+            if (chr < 0x80) {
+                WebScreenManager.sendKeyTyped(webPath, chr, modifiers);
+            } else {
+                // 【中文/IME】非 ASCII 字符走原生键路径会被 Windows 原生层静默丢弃
+                // （字符由 scancode→MapVirtualKey 反推，汉字没有虚拟键码），改走 JS 文本注入。
+                WebScreenManager.sendTextInput(webPath, String.valueOf(chr));
+            }
         }
         return true;
     }

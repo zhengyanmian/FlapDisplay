@@ -256,6 +256,12 @@ public final class McefBridge {
                     "if((t==='_blank'||t==='blank')&&h&&h.indexOf('javascript:')!==0){" +
                     "ev.preventDefault();ev.stopPropagation();location.href=a.href;}}" +
                     "}catch(e){}},true);" +
+                    // 记住最近获得焦点的可编辑元素：中文靠 JS 注入文本时若 activeElement
+                    // 已落到 body（某些站点点完输入框就 blur），仍知道该往哪儿写字。
+                    "document.addEventListener('focusin',function(ev){try{var el=ev.target;if(!el)return;" +
+                    "var tg=(el.tagName||'').toLowerCase();" +
+                    "if(tg==='input'||tg==='textarea'||el.isContentEditable){window.__fdpLastEditable=el;}" +
+                    "}catch(e){}},true);" +
                     "})();";
 
     /**
@@ -849,4 +855,68 @@ public final class McefBridge {
             e.browser.setFocus(true);
         }
     }
+
+    // ===== 文本注入（中文 / IME） =====
+
+    /**
+     * 【为什么需要它】fork 的 Windows 原生层完全不吃 keyCode：字符是由 scancode 经
+     * MapVirtualKey 反推的（见类头注释）。中文等非 ASCII 字符没有对应的虚拟键码，
+     * 走 sendKeyTyped 会被静默丢弃 —— 玩家反馈「网页里打不了中文」即此。
+     * 于是绕过原生键路径，直接把文本注入页面焦点元素：
+     * <ol>
+     * <li>execCommand('insertText') 优先：保留光标/撤销栈、触发标准 input 事件，
+     * 对 React 受控组件（B 站搜索框等）友好；</li>
+     * <li>失败则手动改 value + 派发 input 事件（input/textarea）；</li>
+     * <li>contenteditable 由 insertText 覆盖。</li>
+     * </ol>
+     * 焦点元素取 document.activeElement；若为空（页面把焦点放在 body）则回退到
+     * 最近一次点击过的可编辑元素（__fdpLastEditable，由注入脚本维护）。
+     */
+    static void sendTextInput(String webPath, String text) {
+        Entry e = BROWSERS.get(webPath);
+        if (e == null || e.browser == null || text == null || text.isEmpty()) {
+            return;
+        }
+        try {
+            e.browser.executeJavaScript(TEXT_INPUT_JS_PREFIX + jsString(text) + TEXT_INPUT_JS_SUFFIX,
+                    e.browser.getURL(), 1);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 把 Java 字符串转成纯 ASCII 的 JS 字符串字面量（逐字符 \\uXXXX，避免编码歧义） */
+    private static String jsString(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 2);
+        sb.append('\'');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\'' || c == '\\') {
+                sb.append('\\').append(c);
+            } else if (c >= 0x20 && c < 0x7F) {
+                sb.append(c);
+            } else {
+                sb.append(String.format("\\u%04x", (int) c));
+            }
+        }
+        sb.append('\'');
+        return sb.toString();
+    }
+
+    private static final String TEXT_INPUT_JS_PREFIX =
+            "(function(t){try{var el=document.activeElement;" +
+                    "if(!el||el===document.body){el=window.__fdpLastEditable||null;}" +
+                    "if(!el){return;}" +
+                    "var tg=(el.tagName||'').toLowerCase();" +
+                    "if(!el.isContentEditable&&tg!=='input'&&tg!=='textarea'){return;}" +
+                    "var ok=false;try{ok=document.execCommand('insertText',false,t);}catch(e0){}" +
+                    "if(!ok&&(tg==='input'||tg==='textarea')){" +
+                    "var s=el.selectionStart,e=el.selectionEnd;" +
+                    "if(typeof s==='number'&&typeof e==='number'){" +
+                    "el.value=el.value.slice(0,s)+t+el.value.slice(e);" +
+                    "el.selectionStart=el.selectionEnd=s+t.length;}" +
+                    "else{el.value+=t;}" +
+                    "el.dispatchEvent(new Event('input',{bubbles:true}));" +
+                    "}}catch(e1){}})(";
+
+    private static final String TEXT_INPUT_JS_SUFFIX = ");";
 }

@@ -58,6 +58,14 @@ public final class MediaRenderRegistry {
     public static MediaInfo get(BlockPos pos) {
         Long t = TIMESTAMPS.get(pos);
         if (t != null && System.currentTimeMillis() - t > EXPIRE_MS) {
+            // 【ESC 暂停不判过期】单机暂停时集成服务器一起停，服务端心跳（1.5s）随之中断，
+            // 8 秒后这里的过期判定就会把「仍然挂着」的媒体当成已移除：
+            // 关掉网页浏览器（页面状态全丢）→ 回游戏重建 = 页面从头加载（用户实测「暂停 7 秒
+            // 后所有网页被重置」）。视频同理会被重播。暂停期间只把时间戳向后推，恢复后重新计时。
+            if (MediaManager.isGameMenuPaused()) {
+                TIMESTAMPS.put(pos, System.currentTimeMillis());
+                return INFO.get(pos);
+            }
             // 链接器已移除/停发：清理失效配置，翻牌恢复原版字符显示。
             // 【孤儿音频修复】过期清除同样必须顺手停掉不再被引用的视频播放器，
             // 否则「画面没了、声音还在」（此前清空/拆链接器漏声的路径之一）。

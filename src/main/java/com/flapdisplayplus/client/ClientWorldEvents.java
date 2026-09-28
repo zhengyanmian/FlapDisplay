@@ -29,6 +29,18 @@ public final class ClientWorldEvents {
         NeoForge.EVENT_BUS.addListener(ClientWorldEvents::onLevelUnload);
         NeoForge.EVENT_BUS.addListener(ClientWorldEvents::onLoggedOut);
         NeoForge.EVENT_BUS.addListener(ClientWorldEvents::onLevelTick);
+        NeoForge.EVENT_BUS.addListener(ClientWorldEvents::onClientTick);
+    }
+
+    /**
+     * 每客户端刻：ESC 暂停联动（视频 + 网页媒体一起冻结）。
+     *
+     * ★ 必须用 ClientTickEvent 而不是 LevelTickEvent：单机按 ESC 后客户端关卡 tick
+     *   直接停掉，挂在 LevelTickEvent 上的暂停检测在暂停期间永远不会执行 —— 这正是
+     *   v1.0.7「暂停不生效」的根因（日志里连一条「游戏菜单暂停」都没有）。
+     */
+    private static void onClientTick(net.neoforged.neoforge.client.event.ClientTickEvent.Post event) {
+        MediaManager.tickPauseWatch();
     }
 
     /** 退出世界（回到主菜单）：客户端关卡卸载即触发 */

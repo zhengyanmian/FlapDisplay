@@ -157,21 +157,8 @@ public final class MediaManager {
         sweepRemovedDisplays();
         // 网页纹理帧上传（渲染线程；无网页媒体时空转）
         WebScreenManager.tick();
-        // 游戏菜单（ESC）暂停边沿：视频与网页媒体共用同一个信号。
-        // 注意必须放在 VIDEOS 判空之前——没有视频时网页媒体也需要收到暂停通知。
-        boolean menuPaused = isGameMenuPaused();
-        if (menuPaused != lastMenuPaused) {
-            lastMenuPaused = menuPaused;
-            WebScreenManager.setGamePaused(menuPaused);
-        }
         if (VIDEOS.isEmpty()) {
             return;
-        }
-        if (menuPaused != lastVideoMenuPaused) {
-            lastVideoMenuPaused = menuPaused;
-            for (VideoPlayer vp : VIDEOS.values()) {
-                vp.setMenuPaused(menuPaused);
-            }
         }
         long now = System.currentTimeMillis();
         for (java.util.Iterator<java.util.Map.Entry<String, VideoPlayer>> it =
@@ -192,11 +179,37 @@ public final class MediaManager {
     /** 渲染端超过这个时长不取帧（画面已消失/不可见），就视为孤儿播放器并硬停 */
     private static final long RENDER_STALE_MS = 5000;
 
-    /** 上一刻的游戏菜单暂停状态（网页媒体用；与 lastVideoMenuPaused 分开边沿，互不干扰） */
-    private static boolean lastMenuPaused = false;
-
     /** 上一刻的游戏菜单暂停状态（视频播放器用） */
     private static boolean lastVideoMenuPaused = false;
+
+    /**
+     * 【ESC 暂停联动】由 ClientTickEvent.Post 每客户端刻调用 —— 必须是「客户端刻」而不是
+     * `LevelTickEvent.Post`：
+     * 单机（集成服务器）按 ESC 后**客户端关卡 tick 直接停掉**，挂在 LevelTickEvent 上的
+     * 逻辑在暂停期间根本不会执行 —— v1.0.7 的网页冻结/静音因此完全没生效（日志里连
+     * 「游戏菜单暂停」都没有），视频的 setMenuPaused 也一直是同样的哑火状态。
+     * ClientTickEvent 无论暂停与否都会触发（暂停菜单本身也要每刻渲染/响应）。
+     *
+     * 暂停边沿 → 视频与网页媒体一起冻结：网页走 WebScreenManager.setGamePaused
+     * （关音频线 + 冻结纹理 + JS 暂停页面 video/audio），视频走 VideoPlayer.setMenuPaused。
+     */
+    public static void tickPauseWatch() {
+        boolean menuPaused = isGameMenuPaused();
+        if (menuPaused != lastMenuPaused) {
+            lastMenuPaused = menuPaused;
+            WebScreenManager.setGamePaused(menuPaused);
+        }
+        if (menuPaused == lastVideoMenuPaused) {
+            return;
+        }
+        lastVideoMenuPaused = menuPaused;
+        for (VideoPlayer vp : VIDEOS.values()) {
+            vp.setMenuPaused(menuPaused);
+        }
+    }
+
+    /** 上一刻的游戏菜单暂停状态（网页媒体用） */
+    private static boolean lastMenuPaused = false;
 
     /** 上一刻窗口焦点状态（焦点诊断日志用，边沿触发） */
     private static boolean lastWindowActive = true;
@@ -206,7 +219,7 @@ public final class MediaManager {
      * mc.isPaused() 只在【单人】暂停时为 true；连服务器/局域网时游戏本身不暂停、该值恒 false，
      * 必须同时判断当前打开的是不是 PauseScreen（单人/联机/服务器按 ESC 打开的是同一个类）。
      */
-    private static boolean isGameMenuPaused() {
+    public static boolean isGameMenuPaused() {
         try {
             Minecraft mc = Minecraft.getInstance();
             return mc != null && (mc.isPaused()
