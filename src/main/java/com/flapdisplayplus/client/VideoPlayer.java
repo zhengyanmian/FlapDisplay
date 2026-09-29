@@ -994,6 +994,7 @@ public final class VideoPlayer {
                         if (stopped || paused) {
                             continue;
                         }
+                        applyDistanceGain(pcm);
                         l.write(pcm, 0, pcm.length);
                     }
                 }
@@ -1066,9 +1067,43 @@ public final class VideoPlayer {
         }
     }
 
+    /** 距离衰减的当前系数（一阶平滑，跨 audio 线程读写，volatile 足够） */
+    private volatile float distanceGain = 1f;
+
+    /**
+     * 【距离衰减】按「显示点离玩家的最近距离」对这段 PCM16 逐样本施加音量。
+     *
+     * 走远声音渐小、到 {@link MediaManager#AUDIO_MAX_DIST}（4 个区块）归零 —— 用户实测
+     * 4 个区块外翻牌就看不清了，正好对齐「看不见就听不见」。
+     * 必须逐包平滑（一阶滤波）：距离每刻都在变，直接改增益会有明显的台阶/爆音。
+     */
+    private void applyDistanceGain(byte[] pcm) {
+        float target;
+        try {
+            target = MediaManager.audioGainFor(path);
+        } catch (Throwable t) {
+            target = 1f;
+        }
+        float g = distanceGain;
+        if (Math.abs(target - g) < 0.002f) {
+            g = target;
+        } else {
+            g += (target - g) * 0.25f;
+        }
+        distanceGain = g;
+        if (g >= 0.999f) {
+            return; // 满音量：不做无谓的逐样本运算
+        }
+        for (int i = 0; i + 1 < pcm.length; i += 2) {
+            int v = (short) ((pcm[i] & 0xFF) | (pcm[i + 1] << 8));
+            v = (int) (v * g);
+            pcm[i] = (byte) v;
+            pcm[i + 1] = (byte) (v >> 8);
+        }
+    }
+
     /** AudioBuffer(任意位深/端序) → PCM16 小端字节 */
-    private static byte[] toPcm16LE(AudioBuffer ab) {
-        ByteBuffer data = ab.getData().duplicate();
+    private static byte[] toPcm16LE(AudioBuffer ab) {        ByteBuffer data = ab.getData().duplicate();
         AudioFormat f = ab.getFormat();
         int sampleBytes = Math.max(1, f.getSampleSizeInBits() / 8);
         int channels = Math.max(1, f.getChannels());

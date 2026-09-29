@@ -155,6 +155,8 @@ public final class MediaManager {
             FlapDisplayPlus.LOGGER.info("[FDP] 游戏窗口{}", windowActive ? "获得焦点" : "失去焦点（此时鼠标会解锁）");
         }
         sweepRemovedDisplays();
+        // 距离衰减：刷新「媒体 → 到玩家的最近显示距离」（网页与视频的音量都读它）
+        refreshMediaDistances();
         // 网页纹理帧上传（渲染线程；无网页媒体时空转）
         WebScreenManager.tick();
         if (VIDEOS.isEmpty()) {
@@ -186,14 +188,75 @@ public final class MediaManager {
     private static final long RENDER_STALE_MS = 5000;
 
     /**
-     * 【距离门限】显示点离玩家超过这个距离（方块）就认为「看不见了」→ 媒体静音/回收。
+     * 【满音量半径】这个距离（方块）以内不做任何衰减。
+     */
+    public static final double AUDIO_FULL_DIST = 12.0;
+
+    /**
+     * 【完全听不见的距离】约 4 个区块（用户实测：4 个区块外翻牌就看不清了）。
      *
      * 为什么光靠「渲染访问超时」不够：Create 的翻牌渲染**不做视锥剔除**，玩家走远后
      * renderSafe 照样每帧被调用 → 渲染访问永远新鲜 → 视频/网页的声音在远离后一直响
      * （用户反馈：「离远了视频就不播放了但音频还在继续」）。
      * 这条判据与渲染无关，纯粹按玩家与显示点的距离决定，行为可预期。
      */
-    public static final double AUDIO_MAX_DIST = 48.0;
+    public static final double AUDIO_MAX_DIST = 64.0;
+
+    /**
+     * 距离 → 音量系数（0..1）：FULL 以内满音量，FULL→MAX 之间按 (1-t)² 衰减到 0。
+     * 用平方曲线而不是直线：近处衰减慢、远处迅速归零，听感更接近自然衰减。
+     */
+    public static float audioGainAt(double dist) {
+        if (dist <= AUDIO_FULL_DIST) {
+            return 1f;
+        }
+        if (dist >= AUDIO_MAX_DIST) {
+            return 0f;
+        }
+        double t = (dist - AUDIO_FULL_DIST) / (AUDIO_MAX_DIST - AUDIO_FULL_DIST);
+        double g = (1.0 - t) * (1.0 - t);
+        return (float) g;
+    }
+
+    /**
+     * mediaPath → 到玩家的最近显示距离（每刻由 {@link #refreshMediaDistances()} 从渲染注册表刷新）。
+     * 供音频距离衰减查询；不在表里的媒体音量系数按 1 处理（停播交给孤儿回收那条路）。
+     */
+    private static final Map<String, Double> MEDIA_MIN_DIST = new ConcurrentHashMap<>();
+
+    /** 该媒体当前的音量系数（0..1）。无显示点信息时返回 1（不衰减）。 */
+    public static float audioGainFor(String mediaPath) {
+        if (mediaPath == null) {
+            return 1f;
+        }
+        Double d = MEDIA_MIN_DIST.get(mediaPath);
+        return d == null ? 1f : audioGainAt(d);
+    }
+
+    /**
+     * 每刻刷新「媒体路径 → 到玩家的最近显示距离」。
+     * 同一媒体可能显示在多块翻牌上，取最近的那块（听得最清的那处决定音量）。
+     */
+    private static void refreshMediaDistances() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.player == null) {
+            return;
+        }
+        Map<String, Double> fresh = new java.util.HashMap<>();
+        for (BlockPos p : new java.util.ArrayList<>(MediaRenderRegistry.keys())) {
+            MediaRenderRegistry.MediaInfo mi = MediaRenderRegistry.peek(p);
+            if (mi == null || mi.mediaPath == null) {
+                continue;
+            }
+            double d = Math.sqrt(mc.player.distanceToSqr(p.getX() + 0.5, p.getY() + 0.5, p.getZ() + 0.5));
+            Double old = fresh.get(mi.mediaPath);
+            if (old == null || d < old) {
+                fresh.put(mi.mediaPath, d);
+            }
+        }
+        MEDIA_MIN_DIST.clear();
+        MEDIA_MIN_DIST.putAll(fresh);
+    }
 
     /** 玩家到某点的距离是否超过门限 */
     private static boolean tooFarFrom(double x, double y, double z) {

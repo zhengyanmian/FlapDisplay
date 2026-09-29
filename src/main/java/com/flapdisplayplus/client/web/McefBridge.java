@@ -318,6 +318,10 @@ public final class McefBridge {
             /** 播放期流速监控窗 */
             long monFirstPts = -1;
             long monSamples;
+            /** 距离衰减：目标音量系数（每次 feed 由距离算出） */
+            volatile float targetGain = 1f;
+            /** 距离衰减：当前实际音量系数（一阶平滑，避免走远/走近时爆音或阶梯感） */
+            volatile float smoothGain = 1f;
             javax.sound.sampled.SourceDataLine line;
         }
 
@@ -363,11 +367,13 @@ public final class McefBridge {
             }
         }
 
-        /** float 样本 → 16-bit LE 并写入播放线（mono 与交错立体声都是样本按序全写） */
+        /** float 样本 → 16-bit LE 并写入播放线（mono 与交错立体声都是样本按序全写）
+         *  同时施加距离衰减增益：走远音量渐小，到 AUDIO_MAX_DIST 归零（此时门控会关线）。 */
         private static void writePacket(State st, float[] data) {
+            float g = smoothGain(st, st.targetGain);
             byte[] out = new byte[data.length * 2];
             for (int i = 0; i < data.length; i++) {
-                float v = data[i];
+                float v = data[i] * g;
                 if (v > 1f) {
                     v = 1f;
                 } else if (v < -1f) {
@@ -381,6 +387,35 @@ public final class McefBridge {
                 st.line.write(out, 0, out.length);
             } catch (Throwable ignored) {
             }
+        }
+
+        /** 音量一阶平滑（每个音频包 ~10ms 走一步，时间常数约 50ms，听不出台阶） */
+        private static float smoothGain(State st, float target) {
+            float g = st.smoothGain;
+            if (Math.abs(target - g) < 0.002f) {
+                g = target;
+            } else {
+                g += (target - g) * 0.25f;
+            }
+            st.smoothGain = g;
+            return g;
+        }
+
+        /**
+         * 该网页的距离衰减系数：用心跳里记下的显示点坐标算与玩家的距离。
+         * 没有坐标（从不曾被渲染）时返回 1，交给门控那条路决定是否出声。
+         */
+        private static float gainFor(String webPath) {
+            Heartbeat hb = webPath == null ? null : DISPLAY_HEARTBEAT.get(webPath);
+            if (hb == null || !hb.hasPos) {
+                return 1f;
+            }
+            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+            if (mc == null || mc.player == null) {
+                return 1f;
+            }
+            double d = Math.sqrt(mc.player.distanceToSqr(hb.x + 0.5, hb.y + 0.5, hb.z + 0.5));
+            return com.flapdisplayplus.client.MediaManager.audioGainAt(d);
         }
 
         static void feed(org.cef.browser.CefBrowser browser, float[] data, int framesPerChannelIgnored, long pts) {
@@ -408,6 +443,9 @@ public final class McefBridge {
                 }
                 return;
             }
+
+            // 【距离衰减】每次更新目标音量：预览开着时恒为满音量，仅上屏时按距离衰减
+            st.targetGain = focusOk ? 1f : gainFor(owner);
 
             if (st.probing) {
                 st.probeBuf.add(data.clone());
