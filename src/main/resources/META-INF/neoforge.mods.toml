@@ -9,13 +9,16 @@ displayName="翻牌万象 FlapDisplayPlus"
 authors="枕燕眠"
 logoFile="flapdisplayplus_logo.png"
 description='''
-机械动力(Create)的翻牌显示器扩展附属模组：让翻牌显示图片、GIF 动图与
-实时信息（现实时间/游戏时间/天气/TPS）；若安装了网络音乐机(Net Music)，
-还能联动显示封面、歌名与歌词。所有内容走统一的帧渲染管线绘制在翻牌正面。
+机械动力(Create)的翻牌显示器扩展附属模组：让翻牌显示图片、GIF 动图、视频
+与实时信息（现实时间/游戏时间/天气/TPS），还能把网页（B 站等）显示到翻牌上；
+若安装了网络音乐机(Net Music)，还能联动显示封面、歌名与歌词。
+视频支持 FFmpeg / JCodec 双解码后端，网络媒体支持边下边播。
+所有内容走统一的帧渲染管线绘制在翻牌正面；媒体不需要动力，断电、停转也照常显示。
 
-A Create addon that extends Flap Displays to show images, GIFs and
-live info (real time / in-game time / weather / TPS) — with optional
-Net Music integration for album covers, titles and lyrics.
+A Create addon that extends Flap Displays to show images, GIFs, videos,
+live info (real time / in-game time / weather / TPS) and even web pages —
+with optional Net Music integration for album covers, titles and lyrics.
+Media keeps showing even without kinetic power.
 '''
 
 # ===== 依赖：NeoForge =====
