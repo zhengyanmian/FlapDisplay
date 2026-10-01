@@ -1,6 +1,6 @@
 package com.flapdisplayplus.music.netease;
 
-import com.github.tartaricacid.netmusic.api.NetWorker;
+import com.flapdisplayplus.music.compat.NetWorkerBridge;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -27,7 +27,7 @@ public class NeteaseApi {
 
     /** 获取二维码 key */
     public static String getQRKey() throws Exception {
-        String body = NetWorker.get("https://music.163.com/api/login/qrcode/unikey?type=3", HEADERS);
+        String body = NetWorkerBridge.get("https://music.163.com/api/login/qrcode/unikey?type=3", HEADERS);
         JsonObject obj = JsonParser.parseString(body).getAsJsonObject();
         return obj.has("unikey") ? obj.get("unikey").getAsString() : null;
     }
@@ -47,7 +47,7 @@ public class NeteaseApi {
 
     /** 发送手机验证码 */
     public static String sendCaptcha(String phone) throws Exception {
-        return NetWorker.get(
+        return NetWorkerBridge.get(
                 String.format("https://music.163.com/api/sms/captcha/sent?cellphone=%s&ctcode=86", phone),
                 HEADERS);
     }
@@ -75,7 +75,7 @@ public class NeteaseApi {
         if (cookie != null && !cookie.trim().isEmpty()) {
             headers.put("Cookie", cookie.trim());
         }
-        return NetWorker.get(url, headers);
+        return NetWorkerBridge.get(url, headers);
     }
 
     /** 从响应头 Set-Cookie 提取 Cookie，组合成 "key=value; key=value" 字符串 */
@@ -119,7 +119,7 @@ public class NeteaseApi {
                 .header("Referer", HEADERS.get("Referer"))
                 .GET()
                 .build();
-        return NetWorker.send(request, HttpResponse.BodyHandlers.ofString());
+        return NetWorkerBridge.send(request);
     }
 
     public static String md5(String str) throws Exception {

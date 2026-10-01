@@ -49,9 +49,11 @@ public class FlapDisplayPlus {
         MinecraftForge.EVENT_BUS.addListener(ServerBlockEvents::onBlockBroken);
 
         // ===== 网络音乐机软联动（可选模块）=====
-        // 检测到 Net Music 才注册音乐显示源 / 解析器 / 动力臂交互点；
+        // 守卫类 MusicCompat 绝不引用 netmusic 类；只有确认 Net Music 已安装后，
+        // 才允许加载真正的集成类 MusicNetIntegration（其方法体含 netmusic 类型流，
+        // 未门控直接加载会在类校验阶段抛 NoClassDefFoundError——2026-10-02 崩溃根因）。
         // 未安装则整个模块跳过（界面显示"请安装网络音乐机"提示）。
-        MusicNetIntegration.init(modEventBus, modContainer);
+        com.flapdisplayplus.music.MusicCompat.initIfLoaded(modEventBus, modContainer);
 
         // 客户端专用初始化（配置界面 / 多平台搜索源 / QQ 凭证）——只在客户端执行，
         // 服务端直接跳过（music 客户端类不加载，避免 NoClassDefFoundError）

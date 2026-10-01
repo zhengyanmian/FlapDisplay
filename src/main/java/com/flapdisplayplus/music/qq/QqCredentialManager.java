@@ -6,7 +6,7 @@
  */
 package com.flapdisplayplus.music.qq;
 
-import com.flapdisplayplus.music.MusicNetIntegration;
+import com.flapdisplayplus.music.MusicCompat;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.flapdisplayplus.FlapDisplayPlus;
@@ -32,7 +32,7 @@ public final class QqCredentialManager {
         try {
             Files.createDirectories(dir);
         } catch (IOException e) {
-            MusicNetIntegration.LOGGER.error("[QQ登录] 创建配置目录失败", e);
+            MusicCompat.LOGGER.error("[QQ登录] 创建配置目录失败", e);
         }
         credentialFile = dir.resolve("qq_credential.json");
         load();
@@ -46,7 +46,7 @@ public final class QqCredentialManager {
         try (Reader reader = Files.newBufferedReader(credentialFile, StandardCharsets.UTF_8)) {
             credential = GSON.fromJson(reader, QqCredential.class);
         } catch (Exception e) {
-            MusicNetIntegration.LOGGER.error("[QQ登录] 读取凭证失败", e);
+            MusicCompat.LOGGER.error("[QQ登录] 读取凭证失败", e);
             credential = null;
         }
     }
@@ -62,7 +62,7 @@ public final class QqCredentialManager {
                 GSON.toJson(cred, writer);
             }
         } catch (IOException e) {
-            MusicNetIntegration.LOGGER.error("[QQ登录] 保存凭证失败", e);
+            MusicCompat.LOGGER.error("[QQ登录] 保存凭证失败", e);
         }
     }
 
@@ -72,7 +72,7 @@ public final class QqCredentialManager {
             try {
                 Files.delete(credentialFile);
             } catch (IOException e) {
-                MusicNetIntegration.LOGGER.error("[QQ登录] 删除凭证失败", e);
+                MusicCompat.LOGGER.error("[QQ登录] 删除凭证失败", e);
             }
         }
     }

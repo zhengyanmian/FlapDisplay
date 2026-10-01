@@ -1,6 +1,6 @@
 package com.flapdisplayplus.music;
 
-import com.github.tartaricacid.netmusic.api.NetWorker;
+import com.flapdisplayplus.music.compat.NetWorkerBridge;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -14,9 +14,9 @@ import java.util.Map;
 /**
  * 统一的 HTTP 工具。
  *
- * 关键：所有对音乐平台 API 的请求都通过 Net Music 提供的 {@link NetWorker#getProxyFromConfig()}
- * 获取代理设置，而不是直接 new 一个无代理的 HttpClient。这是客户端能正常联网的前提
- * （用户的 Net Music 可能配置了代理，或官方接口要求特定出口）。若该静态方法不可用，
+ * 关键：所有对音乐平台 API 的请求都通过 NetWorkerBridge（反射调用 Net Music 的
+ * NetWorker#getProxyFromConfig）获取代理设置，而不是直接 new 一个无代理的 HttpClient。这是客户端能正常联网的前提
+ * （用户的 Net Music 可能配置了代理，或官方接口要求特定出口）。若 Net Music 未安装或该静态方法不可用，
  * 则回退到直连（Proxy.NO_PROXY），不阻断流程。
  */
 public final class HttpUtil {
@@ -31,7 +31,7 @@ public final class HttpUtil {
         if (!proxyResolved) {
             proxyResolved = true;
             try {
-                proxy = NetWorker.getProxyFromConfig();
+                proxy = NetWorkerBridge.getProxyFromConfig();
             } catch (Throwable t) {
                 proxy = Proxy.NO_PROXY;
             }

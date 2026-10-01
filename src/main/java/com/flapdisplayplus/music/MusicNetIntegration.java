@@ -80,6 +80,10 @@ public final class MusicNetIntegration {
     private static void commonSetup(final FMLCommonSetupEvent event) {
         event.enqueueWork(() -> {
             try {
+                // 注册音乐网络通道（SeekMessage 等）——本方法只在 Net Music 已安装时被加载执行，
+                // 所以可以安全注册；主类 commonSetup 不再无条件注册（未装 Net Music 不需要）
+                com.flapdisplayplus.music.network.ModNetwork.register();
+
                 // 如果配置了网易云 Cookie，用带认证的 API 替换 Net Music 默认的匿名 API
                 initNeteaseCookie();
 

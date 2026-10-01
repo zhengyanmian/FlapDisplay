@@ -22,7 +22,7 @@ package com.flapdisplayplus.music.client.gui;
 
 import com.flapdisplayplus.client.FdpWidgets;
 import com.flapdisplayplus.config.Config;
-import com.flapdisplayplus.music.MusicNetIntegration;
+import com.flapdisplayplus.music.MusicCompat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -180,7 +180,7 @@ public class ConfigScreen extends Screen {
                         Minecraft.getInstance().setScreen(new ConfigScreen(modContainer, this, Page.GENERAL))));
         y += gap;
 
-        boolean netMusic = MusicNetIntegration.isNetMusicLoaded();
+        boolean netMusic = MusicCompat.isNetMusicLoaded();
         this.addRenderableWidget(btn(cx - w / 2, y, w, 20,
                 Component.literal("🎵 网络音乐机配置" + (netMusic ? "" : "（未安装）")), b -> {
                     if (netMusic) {
@@ -276,7 +276,7 @@ public class ConfigScreen extends Screen {
     private void buildMusicHub() {
         int cx = this.width / 2;
 
-        if (!MusicNetIntegration.isNetMusicLoaded()) {
+        if (!MusicCompat.isNetMusicLoaded()) {
             flow.h1("未检测到网络音乐机（Net Music）模组");
             flow.colored("音乐联动功能当前不可用", C_WARN);
             flow.p("请安装 Net Music 后重启游戏，即可联动显示");
@@ -402,7 +402,7 @@ public class ConfigScreen extends Screen {
         this.addRenderableWidget(btn(left, flow.y(), 140, 20,
                 Component.literal("退出登录"), b -> {
                     com.flapdisplayplus.music.config.Config.NETEASE_COOKIE.set("");
-                    MusicNetIntegration.applyCookie("");
+                    MusicCompat.applyCookie("");
                     FdpWidgets.save();
                     Minecraft.getInstance().setScreen(new ConfigScreen(modContainer, parent, Page.NETEASE));
                 }));

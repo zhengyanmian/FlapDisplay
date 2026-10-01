@@ -39,7 +39,7 @@
  */
 package com.flapdisplayplus.music.search.qqmusic;
 
-import com.flapdisplayplus.music.MusicNetIntegration;
+import com.flapdisplayplus.music.MusicCompat;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -170,7 +170,7 @@ public final class QQMusicApi {
         try {
             JsonObject tree = JsonParser.parseString(response).getAsJsonObject();
             if (tree.has("code") && tree.get("code").getAsInt() != 0) {
-                MusicNetIntegration.LOGGER.warn("[QQ搜索] 外层 code 非 0: {}", response);
+                MusicCompat.LOGGER.warn("[QQ搜索] 外层 code 非 0: {}", response);
                 return Collections.emptyList();
             }
             JsonObject reqObj = tree.getAsJsonObject("req");
@@ -187,7 +187,7 @@ public final class QQMusicApi {
             // 因此这里**只记 info 日志并返回空列表，不要抛异常**——
             // 上层只需提示「无结果」，用户再点一次搜索通常就好了。
             if (reqObj.has("code") && reqObj.get("code").getAsInt() == 2001) {
-                MusicNetIntegration.LOGGER.info("[QQ搜索] 本次返回空（code 2001，多为限流或曲库过滤，可重试）: {}", query);
+                MusicCompat.LOGGER.info("[QQ搜索] 本次返回空（code 2001，多为限流或曲库过滤，可重试）: {}", query);
                 return Collections.emptyList();
             }
             JsonObject songObj = reqObj.getAsJsonObject("data")
@@ -237,10 +237,10 @@ public final class QQMusicApi {
 
                 results.add(new QQSong(mid, name, singer.toString(), interval, vip, mediaMid));
             }
-            MusicNetIntegration.LOGGER.debug("[QQ搜索] query={} 命中 {} 首", query, results.size());
+            MusicCompat.LOGGER.debug("[QQ搜索] query={} 命中 {} 首", query, results.size());
             return results;
         } catch (RuntimeException e) {
-            MusicNetIntegration.LOGGER.error("[QQ搜索] 解析失败: " + response, e);
+            MusicCompat.LOGGER.error("[QQ搜索] 解析失败: " + response, e);
             return Collections.emptyList();
         }
     }
@@ -265,7 +265,7 @@ public final class QQMusicApi {
             try {
                 return resolvePlayUrl(songmid);
             } catch (Exception e) {
-                MusicNetIntegration.LOGGER.error("[QQ解析] 获取播放地址失败: " + songmid, e);
+                MusicCompat.LOGGER.error("[QQ解析] 获取播放地址失败: " + songmid, e);
                 return null;
             }
         });
@@ -295,7 +295,7 @@ public final class QQMusicApi {
     /** 解析出可播放的真实 URL（不带歌名/时长），失败返回 null */
     private static String resolvePlayUrl(String songmid) throws Exception {
         String cookie = QqCredentialManager.getEffectiveCookie();
-        MusicNetIntegration.LOGGER.debug("[QQ解析] resolvePlayUrl 开始 mid={} cookie长度={}", songmid, cookie.length());
+        MusicCompat.LOGGER.debug("[QQ解析] resolvePlayUrl 开始 mid={} cookie长度={}", songmid, cookie.length());
 
         // 优先从搜索缓存取 media_mid。搜索结果本身就带 media_mid，用它可省掉
         // 一次详情接口往返（详情接口 music.pf_song_detail_svr 也常不稳定）。
@@ -303,14 +303,14 @@ public final class QQMusicApi {
         com.flapdisplayplus.music.search.SearchResult cached = QqSearchCache.get(songmid);
         if (cached != null && cached.mediaMid() != null && !cached.mediaMid().isBlank()) {
             mediaMid = cached.mediaMid();
-            MusicNetIntegration.LOGGER.debug("[QQ解析] 用搜索缓存 media_mid：{} -> {}", songmid, mediaMid);
+            MusicCompat.LOGGER.debug("[QQ解析] 用搜索缓存 media_mid：{} -> {}", songmid, mediaMid);
         }
         // 缓存未命中才查详情接口。注意 media_mid 与 songmid 不同，
         // 但详情接口取不到时退回用 songmid 仍有机会成功，故此处只是兜底。
         if (mediaMid == null || mediaMid.isBlank()) {
             TrackInfo info = getTrackInfoByMid(songmid);
             mediaMid = (info.mediaMid == null || info.mediaMid.isBlank()) ? songmid : info.mediaMid;
-            MusicNetIntegration.LOGGER.debug("[QQ解析] 详情接口兜底 media_mid={}", mediaMid);
+            MusicCompat.LOGGER.debug("[QQ解析] 详情接口兜底 media_mid={}", mediaMid);
         }
 
         JsonObject vkeyData = requestVkeyData(songmid, mediaMid);
@@ -339,9 +339,9 @@ public final class QQMusicApi {
             int result = info.has("result") && !info.get("result").isJsonNull()
                     ? info.get("result").getAsInt() : -1;
             // 104003 表示该档位需要 VIP；这不是错误，只是档位不可用
-            MusicNetIntegration.LOGGER.debug("[QQ解析] 档位不可用: filename={} result={}", filename, result);
+            MusicCompat.LOGGER.debug("[QQ解析] 档位不可用: filename={} result={}", filename, result);
         }
-        MusicNetIntegration.LOGGER.info("[QQ解析] 所有档位均未换到播放地址（VIP 歌曲需登录，或歌曲已下架）");
+        MusicCompat.LOGGER.info("[QQ解析] 所有档位均未换到播放地址（VIP 歌曲需登录，或歌曲已下架）");
     }
 
     /**
@@ -368,12 +368,12 @@ public final class QQMusicApi {
             TrackInfo info = getTrackInfoByMid(songmid);
             if (info.interval <= 0 && info.songName.isEmpty()) {
                 // API 返回了空结果（可能 songmid 无效或已下架）
-                MusicNetIntegration.LOGGER.warn("[QQ解析] 歌曲详情为空（可能已下架）：mid={}", songmid);
+                MusicCompat.LOGGER.warn("[QQ解析] 歌曲详情为空（可能已下架）：mid={}", songmid);
                 return null;
             }
             return new QQSong(songmid, info.songName, "", info.interval, info.vip, "");
         } catch (Exception e) {
-            MusicNetIntegration.LOGGER.error("[QQ解析] 获取歌曲详情失败: " + songmid, e);
+            MusicCompat.LOGGER.error("[QQ解析] 获取歌曲详情失败: " + songmid, e);
             return null;
         }
     }
@@ -407,7 +407,7 @@ public final class QQMusicApi {
             }
             return new TrackInfo(name, interval, mediaMid, vip);
         } catch (Exception e) {
-            MusicNetIntegration.LOGGER.error("[QQ解析] 获取歌曲详情失败: " + mid, e);
+            MusicCompat.LOGGER.error("[QQ解析] 获取歌曲详情失败: " + mid, e);
             return new TrackInfo("", 0, "", false);
         }
     }
@@ -548,7 +548,7 @@ public final class QQMusicApi {
             }
             return lyric.isBlank() ? null : lyric;
         } catch (Exception e) {
-            MusicNetIntegration.LOGGER.error("[QQ歌词] 获取失败: " + songmid, e);
+            MusicCompat.LOGGER.error("[QQ歌词] 获取失败: " + songmid, e);
         }
         return null;
     }
@@ -599,7 +599,7 @@ public final class QQMusicApi {
             }
             return trans.isBlank() ? null : trans;
         } catch (Exception e) {
-            MusicNetIntegration.LOGGER.error("[QQ歌词] 获取翻译失败: " + songmid, e);
+            MusicCompat.LOGGER.error("[QQ歌词] 获取翻译失败: " + songmid, e);
         }
         return null;
     }

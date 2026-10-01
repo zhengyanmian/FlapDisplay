@@ -1,6 +1,6 @@
 package com.flapdisplayplus.music.search.qqmusic;
 
-import com.flapdisplayplus.music.MusicNetIntegration;
+import com.flapdisplayplus.music.MusicCompat;
 import com.flapdisplayplus.FlapDisplayPlus;
 import com.flapdisplayplus.music.search.IMusicSearchSource;
 import com.flapdisplayplus.music.search.SearchResult;
@@ -56,7 +56,7 @@ public class QQMusicSearchSource implements IMusicSearchSource {
                 }
                 return results;
             } catch (Exception e) {
-                MusicNetIntegration.LOGGER.error("[QQ搜索] 搜索失败: " + keyword, e);
+                MusicCompat.LOGGER.error("[QQ搜索] 搜索失败: " + keyword, e);
                 return List.of();
             }
         });

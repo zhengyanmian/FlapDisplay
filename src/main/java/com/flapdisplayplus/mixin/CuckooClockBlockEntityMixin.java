@@ -14,7 +14,6 @@ package com.flapdisplayplus.mixin;
 import com.flapdisplayplus.FlapDisplayPlus;
 import com.flapdisplayplus.api.CuckooClockMedia;
 import com.simibubi.create.content.kinetics.clock.CuckooClockBlockEntity;
-import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -72,7 +71,7 @@ public abstract class CuckooClockBlockEntityMixin implements CuckooClockMedia {
     }
 
     @Inject(method = "read", at = @At("TAIL"), remap = false)
-    private void flapdisplayplus$read(CompoundTag tag, HolderLookup.Provider provider, boolean clientPacket, CallbackInfo ci) {
+    private void flapdisplayplus$read(CompoundTag tag, boolean clientPacket, CallbackInfo ci) {
         try {
             if (tag.contains(KEY_MEDIA_PATH)) {
                 this.flapdisplayplus$mediaPath = tag.getString(KEY_MEDIA_PATH);
@@ -89,7 +88,7 @@ public abstract class CuckooClockBlockEntityMixin implements CuckooClockMedia {
     }
 
     @Inject(method = "write", at = @At("HEAD"), remap = false)
-    private void flapdisplayplus$write(CompoundTag tag, HolderLookup.Provider provider, boolean clientPacket, CallbackInfo ci) {
+    private void flapdisplayplus$write(CompoundTag tag, boolean clientPacket, CallbackInfo ci) {
         try {
             tag.putString(KEY_MEDIA_PATH, this.flapdisplayplus$mediaPath);
             tag.putString(KEY_MEDIA_MODE, this.flapdisplayplus$displayMode);
