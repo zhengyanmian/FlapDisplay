@@ -1,0 +1,141 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'net.minecraftforge.gradle' version '6.0.+'
+    id 'org.spongepowered.mixin' version '0.7.+'
+}
+
+version = '1.0.0'
+group = 'com.flapdisplayplus'
+
+base { archivesName = 'flap-display-plus-1.20.1' }
+
+// Forge 1.20.1 使用 Java 17
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+// ===== 依赖仓库 =====
+// Create 6.0.x 及其依赖分散在以下 maven 仓库（与网络音乐机 1.20.1 版同源，已验证）
+repositories {
+    maven { url = 'https://maven.aliyun.com/repository/public' }                              // 阿里云公共镜像
+    maven { url = 'https://maven.createmod.net' }                                              // Create, Ponder, Flywheel
+    maven { url = 'https://maven.ithundxr.dev/mirror' }                                        // Registrate
+    maven { url = 'https://raw.githubusercontent.com/Fuzss/modresources/main/maven/' }          // ForgeConfigAPIPort
+    maven { url = 'https://maven.blamejared.com' }                                              // JEI（传递依赖）
+    maven { url = 'https://maven.theillusivec4.top/' }                                          // Curios（传递依赖）
+    maven { url = 'https://api.modrinth.com/maven' }                                            // MCEF
+    maven { url = 'https://cursemaven.com' }
+    mavenCentral()
+}
+
+mixin {
+    add sourceSets.main, 'flapdisplayplus.refmap.json'
+    add sourceSets.main, 'flapdisplayplus.music.refmap.json'
+    config 'flapdisplayplus.mixins.json'
+    config 'flapdisplayplus.music.mixins.json'
+}
+
+minecraft {
+    // 使用官方映射
+    mappings channel: 'official', version: '1.20.1'
+
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'debug'
+            // Create 6.0.x 的 mixin refmap 需要重映射，否则开发环境启动会报错
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+            mods {
+                flapdisplayplus {
+                    source sourceSets.main
+                }
+            }
+        }
+        server {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'debug'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+            mods {
+                flapdisplayplus {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+configurations {
+    embeddedLibs {
+        canBeConsumed = false
+        canBeResolved = true
+    }
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.2.0'
+
+    // ===== Mixin 注解处理器（生成 refmap：Mixin 在 SRG 运行时的名称映射表，必配）=====
+    annotationProcessor('org.spongepowered:mixin:0.8.5:processor')
+
+    // ===== 机械动力 Create 6.0.x 及其前置 =====
+    // slim jar 不含传递依赖，需手动声明 Ponder / Flywheel / Registrate
+    implementation fg.deobf("com.simibubi.create:create-1.20.1:6.0.8-289:slim") { transitive = false }
+    implementation fg.deobf("net.createmod.ponder:Ponder-Forge-1.20.1:1.0.91")
+    compileOnly fg.deobf("dev.engine-room.flywheel:flywheel-forge-api-1.20.1:1.0.5")
+    runtimeOnly fg.deobf("dev.engine-room.flywheel:flywheel-forge-1.20.1:1.0.5")
+    implementation fg.deobf("com.tterrag.registrate:Registrate:MC1.20-1.3.3")
+    compileOnly annotationProcessor('io.github.llamalad7:mixinextras-common:0.4.1')
+    implementation('io.github.llamalad7:mixinextras-forge:0.4.1')
+
+    // ===== 网络音乐机 Net Music（软联动，非前置）=====
+    // 1.20.1 Forge 版 jar 已放进 libs/（编译期引用其类探测用，运行时不存在则降级跳过）
+    def netmusicJar = file("libs/netmusic.jar")
+    if (netmusicJar.exists()) {
+        compileOnly files(netmusicJar)
+    } else {
+        logger.lifecycle("[deps] 未找到 libs/netmusic.jar —— Net Music 软联动将被跳过（其余功能不受影响）")
+    }
+
+    // ===== MCEF（网页显示的可选前置，软联动模式）=====
+    // Forge 1.20.1 版（Modrinth maven）。未安装时 WebScreenManager.isMcefLoaded() 守卫
+    // 会阻止 McefBridge 类被加载，网页媒体源自动失效，其余功能不受影响。
+    compileOnly fg.deobf("maven.modrinth:mcef:2.1.6-1.20.1")
+
+    // ===== 第三方纯 Java 库（平铺嵌入进 mod jar，与 1.21.1 版同策略）=====
+    compileOnly("com.google.zxing:core:3.5.3")
+    compileOnly("org.jcodec:jcodec:0.2.5")
+    compileOnly("org.jcodec:jcodec-javase:0.2.5")
+    compileOnly("com.twelvemonkeys.imageio:imageio-webp:3.10.1")
+    compileOnly("com.twelvemonkeys.imageio:imageio-core:3.10.1")
+    compileOnly("com.twelvemonkeys.common:common-lang:3.10.1")
+
+    embeddedLibs("com.google.zxing:core:3.5.3") { transitive = false }
+    embeddedLibs("org.jcodec:jcodec:0.2.5") { transitive = false }
+    embeddedLibs("org.jcodec:jcodec-javase:0.2.5") { transitive = false }
+    embeddedLibs("com.twelvemonkeys.imageio:imageio-webp:3.10.1")
+    embeddedLibs("com.twelvemonkeys.imageio:imageio-core:3.10.1")
+    embeddedLibs("com.twelvemonkeys.common:common-lang:3.10.1")
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+// ===== 打包：把 embeddedLibs 里的 jar 平铺进 mod jar =====
+tasks.named("jar") {
+    // refmap 显式入 jar：Mixin AP 生成于 compileJava，两个 mixin json 都声明
+    // "flapdisplayplus.refmap.json"，这里按该名打包（MixinGradle 自带的拷贝
+    // 用的名字不可控，故显式来一份，两者并存无害）。
+    from("build/tmp/compileJava/compileJava-refmap.json") {
+        rename { 'flapdisplayplus.refmap.json' }
+    }
+    from({
+        configurations.embeddedLibs.findAll { it.name.endsWith(".jar") }
+                .collect { zipTree(it) }
+    }) {
+        exclude "META-INF/**"
+        exclude "module-info.class"
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    }
+}

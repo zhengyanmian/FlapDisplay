@@ -1,0 +1,30 @@
+{
+    "_comment": [
+        "【为什么 required/defaultRequire 必须是 true/1，不要改回 false/0】",
+        "曾经这里是 required=false + defaultRequire=0。含义是：",
+        "  - 某个 @Inject 的目标方法找不到时，Mixin 只是**静默跳过**这个注入，",
+        "    不报错、不写日志、不崩溃，模组照常加载；",
+        "  - 于是出现「改了代码、构建成功、jar 也换了，行为却完全没变」这种",
+        "    最难查的故障——因为根本没有任何线索说注入失败了。",
+        "CDBurnerMenuScreen 的 setMaxLength(19) 修复就是这样一度查不出为什么没生效。",
+        "改回 false/0 等于自愿放弃所有注入失败的报错信息，务必保持 true/1。"
+    ],
+    "required": true,
+    "refmap": "flapdisplayplus.refmap.json",
+    "minVersion": "0.8",
+    "package": "com.flapdisplayplus.music.mixin",
+    "compatibilityLevel": "JAVA_17",
+    "mixins": [
+        "TileEntityMusicPlayerMixin",
+        "BlockMusicPlayerMixin"
+    ],
+    "client": [
+        "NetMusicSoundMixin",
+        "NetMusicAudioStreamMixin",
+        "CDBurnerMenuScreenMixin"
+    ],
+    "server": [],
+    "injectors": {
+        "defaultRequire": 1
+    }
+}

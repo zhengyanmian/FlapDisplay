@@ -1,0 +1,19 @@
+{
+    "required": true,
+    "refmap": "flapdisplayplus.refmap.json",
+    "minVersion": "0.8",
+    "package": "com.flapdisplayplus.mixin",
+    "compatibilityLevel": "JAVA_17",
+    "mixins": [
+        "CuckooClockBlockEntityMixin",
+        "DisplayLinkBlockEntityMixin"
+    ],
+    "client": [
+        "FlapDisplayRendererMixin",
+        "DisplayLinkBlockMixin"
+    ],
+    "server": [],
+    "injectors": {
+        "defaultRequire": 1
+    }
+}

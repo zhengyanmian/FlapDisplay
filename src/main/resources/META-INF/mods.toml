@@ -1,0 +1,47 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+logoFile="flapdisplayplus_logo.png"
+
+[[mods]]
+modId="flapdisplayplus"
+version="1.0.0"
+displayName="FlapDisplayPlus | 翻牌万象"
+authors="枕燕眠"
+description='''
+机械动力(Create)的翻牌显示器扩展附属模组：让翻牌显示图片、GIF 动图、视频、
+网页与实时信息（现实时间/游戏时间/天气/TPS）；若安装了网络音乐机(Net Music)，
+还能联动显示歌名、播放状态与歌词。遵循原版规则，翻牌需要动力（转速）才会显示媒体，
+无应力即不显示。
+
+A Create addon that extends Flap Displays to show images, GIFs, videos,
+live web pages and info (real time / in-game time / weather / TPS) — with
+optional Net Music integration for song titles, status and lyrics.
+'''
+
+# ===== 依赖：Forge =====
+[[dependencies.flapdisplayplus]]
+    modId="forge"
+    mandatory=true
+    type="required"
+    versionRange="[47,)"
+    ordering="NONE"
+    side="BOTH"
+
+# ===== 依赖：Minecraft 1.20.1 =====
+[[dependencies.flapdisplayplus]]
+    modId="minecraft"
+    mandatory=true
+    type="required"
+    versionRange="[1.20.1,1.21)"
+    ordering="NONE"
+    side="BOTH"
+
+# ===== 依赖：机械动力 Create =====
+[[dependencies.flapdisplayplus]]
+    modId="create"
+    mandatory=true
+    type="required"
+    versionRange="[6.0,)"
+    ordering="AFTER"
+    side="BOTH"

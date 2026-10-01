@@ -1,0 +1,33 @@
+{
+  "flapdisplayplus.display_source.netmusic_song_name": "网络音乐：歌曲名",
+  "flapdisplayplus.display_source.netmusic_play_status": "网络音乐：播放状态",
+  "flapdisplayplus.display_source.netmusic_lyric": "网络音乐：原歌词",
+  "flapdisplayplus.display_source.netmusic_trans_lyric": "网络音乐：翻译歌词",
+  "flapdisplayplus.display_source.netmusic_all_in_one": "网络音乐：综合",
+  "flapdisplayplus.display_source.netmusic_dual_lyric": "网络音乐：双行歌词",
+  "flapdisplayplus.display_source.netmusic_cover": "网络音乐：封面图文",
+
+  "flapdisplayplus.gui.search.open": "搜索",
+  "flapdisplayplus.gui.search.title": "搜索歌曲",
+  "flapdisplayplus.gui.search.input": "输入歌曲名...",
+  "flapdisplayplus.gui.search.do": "搜索",
+  "flapdisplayplus.gui.search.loading": "正在搜索...",
+  "flapdisplayplus.gui.search.no_result": "没有找到结果（检查网络或换个关键词）",
+  "flapdisplayplus.gui.search.hint": "选择歌曲后将自动填入刻录机，点击「刻录」完成",
+
+  "flapdisplayplus.config.show_lyric_when_paused": "暂停时显示歌词",
+  "flapdisplayplus.config.show_pause_time": "暂停时显示时间",
+  "flapdisplayplus.config.pause_symbol_enabled": "显示播放/暂停符号",
+  "flapdisplayplus.config.redstone_mode": "红石信号模式",
+  "flapdisplayplus.config.pause_resume": "暂停续播",
+  "flapdisplayplus.config.netease_cookie": "网易云 Cookie",
+  "flapdisplayplus.config.audio_quality": "歌曲音质",
+  "flapdisplayplus.config.search_list_mode": "搜索结果列表模式",
+  "flapdisplayplus.config.search_page_size": "每页歌曲数量",
+
+  "flapdisplayplus.configuration.section.display": "显示设置",
+  "flapdisplayplus.configuration.section.redstone": "红石设置",
+  "flapdisplayplus.configuration.section.playback": "播放设置",
+  "flapdisplayplus.configuration.section.netease": "网易云设置",
+  "flapdisplayplus.configuration.section.search_list": "搜索列表设置"
+}
