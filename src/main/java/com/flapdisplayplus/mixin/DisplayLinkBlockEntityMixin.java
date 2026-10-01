@@ -104,9 +104,7 @@ public abstract class DisplayLinkBlockEntityMixin {
         // 互相拉扯相位，「每 20 tick 推送」实际会漂移成很久才推一次，媒体因此断流。
         boolean due = (this.flapdisplayplus$tickCounter++ % PUSH_INTERVAL_TICKS) == 0;
 
-        // ===== 翻牌显示器无转速 → 清除图片 =====
-        // 用户确认：需要转速的是【翻牌显示器】（FlapDisplay 是 KineticBlockEntity，靠动力
-        // 转动翻牌），不是链接器也不是时钟。翻牌不转（getSpeed()==0）→ 不显示媒体。
+        // ===== 目标必须是翻牌显示器 =====
         BlockPos targetPos = self.getTargetPosition();
         if (targetPos == null
                 || !(self.getLevel().getBlockEntity(targetPos) instanceof FlapDisplayBlockEntity fbe)) {
@@ -114,17 +112,12 @@ public abstract class DisplayLinkBlockEntityMixin {
             flapdisplayplus$clearIfPushed(self, "目标不再是翻牌显示器");
             return;
         }
-        if (fbe.getSpeed() == 0) {
-            // 【2026-09-27 服务端优化】原实现是 `if (due) { 发清空包 }`：
-            // 只要翻牌一直不转，就会**每秒广播一个空包，永不停止** —— 白烧服务端 CPU 和带宽。
-            // 清空是「状态转换」而非「持续状态」：客户端收到空包即删除注册项，之后不会再复活，
-            // 所以只需在「从有媒体 → 变无转速」的那一次发一包。clearIfPushed 用
-            // pushedRenderPos 判重，天然只在转换时发一次。
-            flapdisplayplus$clearIfPushed(self, "翻牌无转速");
-            return; // 翻牌不转：不设源、不推送
-        }
+        // 【2026-10-01 改：不再检查转速】
+        // 旧实现在 fbe.getSpeed()==0 时发清空包（「翻牌不转就不显示媒体」）。用户要求取消：
+        // 「断电即停止 都改为无应力」—— 媒体无应力（断电、停转、动力网络过载）也照常显示。
+        // 于是这里只保留「目标必须仍是翻牌显示器」这一条失效检查。
 
-        // ===== 翻牌有转速：强制媒体显示源 + 推送 =====
+        // ===== 指向布谷鸟时钟：强制媒体显示源 + 持续推送 =====
         // 指向布谷鸟时钟的链接器 ⇒ 强制使用本模组媒体显示源（与注册实例一致）
         // activeSource 是 public 字段，直接读写
         if (self.activeSource != ModDisplaySources.FLAP_DISPLAY_MEDIA.get()) {
