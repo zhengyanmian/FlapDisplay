@@ -39,7 +39,7 @@ Turn the Create Flap Display into a real screen.
 
 **FlapDisplayPlus** is an add-on for Create: the flap display, which could originally only show text, can now play **images, GIFs, and videos**, show **live information**, and sync with **Net Music** to display album covers and line-synced lyrics.
 
-**No kinetic power required**: media keeps showing with zero rotation / zero stress — cutting the power, stopping the shaft or overloading the kinetic network will not blank the screen (vanilla flap *text* still needs rotation to flip its flaps; the media layer is drawn on top and is not affected).
+The add-on sticks to vanilla rules: a flap display needs **kinetic power** to show media — no rotation, no picture.
 
 ## ✨ Features
 
@@ -80,9 +80,9 @@ With [Net Music](https://github.com/zhengyanmian/NetMusicDisplay) installed:
 - QQ Music QR-code login
 - Burn media records
 
-### Power & cleanup
+### Sticks to vanilla rules
 
-- Flap displays show media **without any kinetic power** (no stress required) — power loss or a stopped shaft will not blank the screen
+- Flap displays need **kinetic power** to show media — no rotation, no picture
 - ESC menu pauses both video and audio
 - Breaking the block or clearing the media stops playback instantly — no ghost sounds
 
@@ -91,7 +91,7 @@ With [Net Music](https://github.com/zhengyanmian/NetMusicDisplay) installed:
 1. Place a **Flap Display** and point a **Display Link** at it
 2. Open the display link's screen and choose the **media source**
 3. Pick a local image/video file, or paste a URL
-4. Done — the media shows right away (**no kinetic power required**)
+4. Supply kinetic power — the flaps come alive
 
 **Calibration** (optional):
 
@@ -133,7 +133,7 @@ MIT. Third-party: ZXing (Apache-2.0) · JCodec (BSD-2-Clause) · TwelveMonkeys (
 
 **FlapDisplayPlus（翻牌万象）** 是一个 Create 附属模组：原版只能显示文字的翻牌显示器，现在可以播放**图片、GIF 动图、视频**，显示**实时信息**，并与**网络音乐机（Net Music）**联动显示歌曲封面与同步歌词。
 
-模组**不需要动力**：翻牌显示器**无应力（断电、停转）也照常显示**内容 —— 原版翻牌的**文字**需要转速才翻动叶片，媒体画面是我们叠加绘制的一层，不受此限。
+模组严格遵循原版设定：翻牌显示器**需要动力（转速）**才会显示内容，断电即停。
 
 ## ✨ 特性
 
@@ -174,9 +174,9 @@ MIT. Third-party: ZXing (Apache-2.0) · JCodec (BSD-2-Clause) · TwelveMonkeys (
 - QQ 音乐扫码登录
 - 刻录媒体唱片
 
-### 动力与清理
+### 遵守原版规则
 
-- 翻牌显示器**无应力（不接动力）也能显示媒体**——断电、停转、动力网络过载都不会让画面消失
+- 翻牌显示器**需要转速**才显示媒体——无转速不显示
 - ESC 菜单同时暂停视频与音频
 - 挖掉方块或清空媒体立即停止播放——没有幽灵声音
 
@@ -185,7 +185,7 @@ MIT. Third-party: ZXing (Apache-2.0) · JCodec (BSD-2-Clause) · TwelveMonkeys (
 1. 放置**翻牌显示器**，把**显示链接器**对准它
 2. 打开显示链接器界面，选择**媒体来源**
 3. 选择本地图片/视频文件，或粘贴 URL
-4. 完成——画面**立即显示**（**不需要动力**）
+4. 提供动力——翻牌开始生动起来
 
 **校准**（可选）：
 

@@ -296,7 +296,7 @@ public final class McefBridge {
      * 自动回到探测模式。任何 fork 怪癖都自适应。
      *
      * 【声音开关】（v1.0.6）两条独立出声通道：①网页预览界面（WebScreen）开着的那一个；
-     * ②正在翻牌上显示的网页（渲染心跳保活，翻牌被拆/区块卸载/离开视野 5 秒后静音，与视频孤儿回收同口径）。
+     * ②正在翻牌上显示的网页（渲染心跳保活，断电/离开视野 5 秒后静音，与视频孤儿回收同口径）。
      * 两者都不满足时丢包关线（保留参数，恢复出声条件后无缝续播）。
      *
      * 【游戏菜单暂停】（v1.0.7）ESC 打开游戏菜单（单人暂停 / 任意模式的 PauseScreen）时
@@ -589,7 +589,7 @@ public final class McefBridge {
         }
         long age = System.currentTimeMillis() - hb.ms;
         if (age >= DISPLAY_ALIVE_MS) {
-            return false; // 渲染端不再取帧（翻牌被拆 / 区块卸载）
+            return false; // 渲染端不再取帧（断电 / 翻牌被拆 / 区块卸载）
         }
         if (!hb.hasPos) {
             return true;
