@@ -3,9 +3,14 @@ plugins {
     id 'idea'
     id 'net.minecraftforge.gradle' version '6.0.+'
     id 'org.spongepowered.mixin' version '0.7.+'
+    // Shadow：嵌入库重定位到本模组命名空间。1.21.1 NeoForge 版已实证：
+    // 平铺嵌入的 twelvemonkeys 会与 YACL / 沉浸画框等内置同库的 mod
+    // 在 JPMS 模块解析阶段冲突（两模块导出同一包 → ResolutionException）。
+    // 重定位后导出 com.flapdisplayplus.shaded.*，与任何 mod 都不可能冲突。
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
-version = '1.0.1'
+version = '1.0.2'
 group = 'com.flapdisplayplus'
 
 base { archivesName = 'flap-display-plus-1.20.1' }
@@ -127,15 +132,42 @@ tasks.named("jar") {
     // refmap 显式入 jar：Mixin AP 生成于 compileJava，两个 mixin json 都声明
     // "flapdisplayplus.refmap.json"，这里按该名打包（MixinGradle 自带的拷贝
     // 用的名字不可控，故显式来一份，两者并存无害）。
+    // 嵌入库不再平铺进 jar 任务，改由 shadowJar 重定位后并入；出货以 reobfShadowJar 为准。
+    archiveClassifier = 'unshaded'
+    from("build/tmp/compileJava/compileJava-refmap.json") {
+        rename { 'flapdisplayplus.refmap.json' }
+    }
+}
+
+shadowJar {
+    archiveClassifier = ''
+    // 只打包本模组自己的类与资源，嵌入库经下方 from 显式加入并重定位。
+    // 注意：ShadowJar 任务自身有 configurations 属性，from 闭包里必须用
+    // project.configurations 显式取工程的 embeddedLibs，否则闭包解析到
+    // 任务属性（空列表），嵌入库会静默丢失。
+    configurations = []
     from("build/tmp/compileJava/compileJava-refmap.json") {
         rename { 'flapdisplayplus.refmap.json' }
     }
     from({
-        configurations.embeddedLibs.findAll { it.name.endsWith(".jar") }
+        project.configurations.embeddedLibs.findAll { it.name.endsWith(".jar") }
                 .collect { zipTree(it) }
     }) {
         exclude "META-INF/**"
         exclude "module-info.class"
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     }
+    relocate 'com.twelvemonkeys', 'com.flapdisplayplus.shaded.twelvemonkeys'
+    relocate 'com.google.zxing', 'com.flapdisplayplus.shaded.zxing'
+    relocate 'org.jcodec', 'com.flapdisplayplus.shaded.jcodec'
+}
+
+// Forge 1.20.1 运行时为 SRG 命名：shadowJar 产物必须再过 ForgeGradle 的 reobf。
+// reobfShadowJar 是最终出货任务。
+reobf {
+    shadowJar {}
+}
+
+tasks.named("assemble") {
+    dependsOn tasks.named("reobfShadowJar")
 }
