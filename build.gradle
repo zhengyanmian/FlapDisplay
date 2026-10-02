@@ -1,9 +1,17 @@
 plugins {
     id "net.neoforged.moddev" version "2.0.141"
+    // Shadow：把嵌入的第三方库重定位（relocate）到我们自己的包名下。
+    // 【为什么必须重定位】2026-10-02 崩溃：YACL / 沉浸画框等 mod 也内置
+    // twelvemonkeys（jarinjar，模块名 com.twelvemonkeys.imageio.core），
+    // 而我们平铺嵌入的库让本模块也导出 com.twelvemonkeys.* 包 ——
+    // JPMS 不允许两个模块导出同一包，模块解析阶段直接拒绝启动
+    //（ResolutionException，发生在任何代码执行之前，运行时守卫救不了）。
+    // 重定位后我们导出的是 com.flapdisplayplus.shaded.*，与任何 mod 都不可能冲突。
+    id "com.gradleup.shadow" version "8.3.6"
 }
 
 group = "com.flapdisplayplus"
-version = "1.1.4"
+version = "1.1.5"
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
@@ -133,14 +141,27 @@ dependencies {
     embeddedLibs("com.twelvemonkeys.common:common-lang:${twelvemonkeys_version}")
 }
 
-// ===== 打包：把 embeddedLibs 里的 jar 平铺进 mod jar =====
+// ===== 打包 =====
+// 嵌入库不再平铺进 jar 任务，改由 shadowJar 重定位后并入（见下方 shadowJar 块）。
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
 }
 
 tasks.named("jar") {
+    // 普通 jar 仅作编译产物参考（不含嵌入库），出货以 shadowJar 为准
+    archiveClassifier = "unshaded"
+}
+
+shadowJar {
+    archiveClassifier = ""
+    // 只打包本模组自己的类与资源；嵌入库通过下方 from 显式加入。
+    // （默认会并入 runtimeClasspath，会把 Create/Flywheel 等打进来，必须清空）
+    // 注意：ShadowJar 任务自身有 configurations 属性，这里设置的是任务的打包配置，
+    // 而下方 from 闭包里必须用 project.configurations 显式取工程的 embeddedLibs，
+    // 否则闭包解析到任务属性（空列表），嵌入库会静默丢失（1.1.5 首build踩坑）。
+    configurations = []
     from({
-        configurations.embeddedLibs.findAll { it.name.endsWith(".jar") }
+        project.configurations.embeddedLibs.findAll { it.name.endsWith(".jar") }
                 .collect { zipTree(it) }
     }) {
         // 排除 META-INF/**：尤其是 SPI 服务文件（TwelveMonkeys 的 ImageReaderSpi），
@@ -149,4 +170,14 @@ tasks.named("jar") {
         exclude "module-info.class"
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     }
+    // 三个嵌入库整体搬到我们自己的命名空间（字节码常量池同步改写，
+    // 本模组代码里对它们的 import 引用也会被一并改写，无需改源码）。
+    relocate "com.twelvemonkeys", "com.flapdisplayplus.shaded.twelvemonkeys"
+    relocate "com.google.zxing", "com.flapdisplayplus.shaded.zxing"
+    relocate "org.jcodec", "com.flapdisplayplus.shaded.jcodec"
+}
+
+// 出货走 shadowJar
+tasks.named("assemble") {
+    dependsOn tasks.named("shadowJar")
 }
